@@ -1,24 +1,31 @@
 
-import time
 import numpy as np
 from scipy.misc import imsave
 import freenect
 import cv
 
+def prepare_cv(video):
+    image = cv.CreateImageHeader((video.shape[1], video.shape[0]),
+                                 cv.IPL_DEPTH_8U,
+                                 3)
+    cv.SetData(image, video.tostring(),
+               video.dtype.itemsize * 3 * video.shape[1])
+    return image
+
+def gray2color(img):
+    new_img = np.zeros(img.shape + (3,), dtype=img.dtype)
+    new_img[:] = img[:,:,np.newaxis]
+    return new_img
+
 def capture_pair(index, ir_img):
     
     rgb_img = freenect.sync_get_video(format=freenect.VIDEO_RGB)[0]
-    detected, corners = cv.FindChessboardCorners(rgb_img, (8,6))
+    detected, corners = cv.FindChessboardCorners(prepare_cv(rgb_img), (8,6))
     if not detected:
         return index
     imsave("ir%03d.png"%index, ir_img)
     imsave("rgb%03d.png"%index, rgb_img)
     return index + 1
-
-def prepare_ir_img(ir_img):
-    new_img = np.zeros(ir_img.shape + (3,), dtype=ir_img.dtype)
-    new_img[:] = ir_img[:,:,np.newaxis]
-    return new_img
 
 def main():
     
@@ -32,15 +39,14 @@ def main():
     cv.NamedWindow('Capture')
     index = 0
     while True:
-        img = prepare_ir_img(freenect.sync_get_video(format=freenect.VIDEO_IR_8BIT)[0])
+        img = gray2color(freenect.sync_get_video(format=freenect.VIDEO_IR_8BIT)[0])
+        img_cv = prepare_cv(img)
         
-        detected, corners = cv.FindChessboardCorners(img, (8,6))
+        detected, corners = cv.FindChessboardCorners(img_cv, (8,6))
         if detected:
-            img_show = np.copy(img)
-            cv.DrawChessboardCorners(img_show, (8,6), corners, 1)
-            cv.ShowImage("Capture", img_show)
-        else:
-            cv.ShowImage("Capture", img)
+            cv.DrawChessboardCorners(img_cv, (8,6), corners, 1)
+        
+        cv.ShowImage("Capture", img_cv)
         
         key = cv.WaitKey(1)
         if key == 27:
