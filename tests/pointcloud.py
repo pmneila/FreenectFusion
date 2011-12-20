@@ -18,35 +18,42 @@ class CameraState:
     TRANSLATION = 2
     ZOOM = 3
 
-window = None
+class GlobalState:
+    """Global state for the demo."""
+    window = None
+    
+    key_state = [False]*256
+    mouse_position = None
+    
+    camera = OrbitCamera()
+    camera_state = CameraState.NONE
+    
+    gl_rgb_texture = None
+    
+    # Prepare the points.
+    vertices = np.reshape(np.mgrid[:480,:640][[1,0]], (2,-1))
+    vertices = np.insert(vertices, 2, 1, 0)
+    
+    #depth_map = np.array([123.6 * np.tan(i/2842.5 + 1.1863) for i in xrange(2048)])
+    #depth_map = np.array([1000.0 / (i * -0.0030711016 + 3.3309495161) for i in xrange(2048)])
+    #depth_map[2047] = 0.0
+    
+    # Prepare the transformation matrices.
+    _aux = np.insert(np.insert(kc.K_rgb, 3, 0, 1), 2, 0, 0)
+    texcoord_matrix = np.dot(_aux, kc.T).T
+    vertices_matrix = np.vstack([np.insert(la.inv(kc.K_ir), 2, 0, 1),
+                        [0,0,-0.0030711016e-3,3.3309495161e-3]]).T
+    
+    show_ir = False
 
-key_state = [False]*256
-mouse_position = None
-
-camera = OrbitCamera()
-camera_state = CameraState.NONE
-
-gl_rgb_texture = None
-gl_depth_texture = None
-
-# Prepare the points.
-vertices = np.reshape(np.mgrid[:480,:640][[1,0]], (2,-1))
-texcoords = vertices / np.array([[640.0], [480.0]])
-vertices = np.insert(vertices, 2, 1, 0)
-vertices = np.dot(la.inv(kc.K_ir), vertices)
-
-#depth_map = np.array([123.6 * np.tan(i/2842.5 + 1.1863) for i in xrange(2048)])
-depth_map = np.array([1000.0 / (i * -0.0030711016 + 3.3309495161) for i in xrange(2048)])
-depth_map[2047] = 0.0
+glbstate = GlobalState()
 
 def init_gl(width, height):
-    global gl_rgb_texture
-    
     gl.glClearColor(0.2, 0.2, 0.2, 0.0)
     gl.glEnable(gl.GL_DEPTH_TEST)
     gl.glEnable(gl.GL_TEXTURE_2D)
-    gl_rgb_texture = gl.glGenTextures(1)
-    gl.glBindTexture(gl.GL_TEXTURE_2D, gl_rgb_texture)
+    glbstate.gl_rgb_texture = gl.glGenTextures(1)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, glbstate.gl_rgb_texture)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
     
@@ -62,38 +69,59 @@ def resize_event(width, height):
 def display():
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
     
-    #rgb_img = freenect.sync_get_video(format=freenect.VIDEO_IR_8BIT)[0]
-    rgb_img = freenect.sync_get_video()[0]
-    depth_img = freenect.sync_get_depth()[0]
-    depth = depth_map[depth_img]
-    
-    current_vertices = vertices * depth.ravel()
-    
-    # Extract texcoords.
-    aux = np.insert(current_vertices, 3, 1, 0)
-    aux = np.dot(kc.K_rgb, np.dot(kc.T, aux)[:3,:])
-    aux = aux / aux[2,:]
-    texcoords = aux[:2,:] / np.array([[640.0], [480.0]])
-    
     gl.glEnable(gl.GL_TEXTURE_2D)
-    gl.glBindTexture(gl.GL_TEXTURE_2D, gl_rgb_texture)
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, 3, 640, 480, 0,
-                    gl.GL_RGB, gl.GL_UNSIGNED_BYTE, rgb_img)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, glbstate.gl_rgb_texture)
     
+    # Prepare the texture matrix.
+    gl.glMatrixMode(gl.GL_TEXTURE)
     gl.glLoadIdentity()
-    glu.gluLookAt(*camera.get_glulookat_parameters())
+    gl.glScaled(1/640.0, 1/480.0, 1.0)
+    
+    # Get the Kinect image and prepare an OpenGL texture.
+    if not glbstate.show_ir:
+        rgb_img = freenect.sync_get_video()[0]
+        # Copy the image to the texture.
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, 3, 640, 480, 0,
+                        gl.GL_RGB, gl.GL_UNSIGNED_BYTE, rgb_img)
+        # Refine the texture matrix.
+        gl.glMultMatrixd(glbstate.texcoord_matrix)
+        gl.glMultMatrixd(glbstate.vertices_matrix)
+    else:
+        ir_img = freenect.sync_get_video(format=freenect.VIDEO_IR_8BIT)[0]
+        # Copy the image to the texture.
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, 3, 640, 480, 0,
+                        gl.GL_LUMINANCE, gl.GL_UNSIGNED_BYTE, ir_img)
+        
+    # Get the depth map.
+    depth_img = freenect.sync_get_depth()[0]
+    
+    # Prepare the model-view matrix.
+    gl.glMatrixMode(gl.GL_MODELVIEW)
+    gl.glLoadIdentity()
+    glu.gluLookAt(*glbstate.camera.get_glulookat_parameters())
+    gl.glTranslated(0.0, 0.0, -1000.0)
+    gl.glPushMatrix()
+    gl.glMultMatrixd(glbstate.vertices_matrix)
+    
+    # Prepare the vertices.
+    glbstate.vertices[2,:] = depth_img.ravel()
+    
+    # Draw the vertices.
     gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
     gl.glEnableClientState(gl.GL_TEXTURE_COORD_ARRAY)
-    gl.glVertexPointer(3, gl.GL_DOUBLE, 0, current_vertices.T.ravel())
-    gl.glTexCoordPointer(2, gl.GL_DOUBLE, 0, texcoords.T.ravel())
-    gl.glPointSize(1)
+    data = glbstate.vertices.T.ravel()
+    gl.glVertexPointer(3, gl.GL_DOUBLE, 0, data)
+    gl.glTexCoordPointer(3, gl.GL_DOUBLE, 0, data)
+    gl.glPointSize(2.0)
     gl.glColor3d(1,1,1)
     gl.glDrawArrays(gl.GL_POINTS, 0, 640*480)
     
-    # Draw axes indicator.
+    gl.glPopMatrix()
     gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
     gl.glDisableClientState(gl.GL_TEXTURE_COORD_ARRAY)
     gl.glDisable(gl.GL_TEXTURE_2D)
+    
+    # Draw axes indicator.
     gl.glPointSize(5)
     gl.glBegin(gl.GL_POINTS)
     gl.glColor3d(1, 0, 0)
@@ -107,53 +135,44 @@ def display():
     glut.glutSwapBuffers()
 
 def keyboard_press_event(key, x, y):
-    global window
-    global key_state
-    
     if key == chr(27):
         freenect.sync_set_led(1)
-        glut.glutDestroyWindow(window)
+        glut.glutDestroyWindow(glbstate.window)
         sys.exit(0)
+    elif key == ' ':
+        print "Toggled the RGB/IR image."
+        glbstate.show_ir = not glbstate.show_ir
     
-    key_state[ord(key)] = True
+    glbstate.key_state[ord(key)] = True
 
 def keyboard_up_event(key, x, y):
-    global key_state
-    key_state[ord(key)] = False
+    glbstate.key_state[ord(key)] = False
 
 def mouse_button_event(button, state, x, y):
-    
-    global mouse_position, camera_state
-    
-    mouse_position = (x,y)
+    glbstate.mouse_position = (x,y)
     
     if state == glut.GLUT_UP:
-        camera_state = CameraState.NONE
+        glbstate.camera_state = CameraState.NONE
     elif button == glut.GLUT_LEFT_BUTTON:
-        camera_state = CameraState.ROTATION
+        glbstate.camera_state = CameraState.ROTATION
     elif button == glut.GLUT_RIGHT_BUTTON:
-        camera_state = CameraState.ZOOM
+        glbstate.camera_state = CameraState.ZOOM
     elif button == glut.GLUT_MIDDLE_BUTTON:
-        camera_state = CameraState.TRANSLATION
+        glbstate.camera_state = CameraState.TRANSLATION
 
 def mouse_moved_event(x, y):
+    offset = map(sub, (x,y), glbstate.mouse_position)
     
-    global mouse_position, camera, camera_state
+    if glbstate.camera_state == CameraState.ROTATION:
+        glbstate.camera.rotate(*[i/100.0 for i in offset])
+    elif glbstate.camera_state == CameraState.TRANSLATION:
+        glbstate.camera.translate(offset[0]*3, -offset[1]*3)
+    elif glbstate.camera_state == CameraState.ZOOM:
+        glbstate.camera.zoom(offset[1])
     
-    offset = map(sub, (x,y), mouse_position)
-    
-    if camera_state == CameraState.ROTATION:
-        camera.rotate(*[i/100.0 for i in offset])
-    elif camera_state == CameraState.TRANSLATION:
-        camera.translate(offset[0], -offset[1])
-    elif camera_state == CameraState.ZOOM:
-        camera.zoom(offset[1])
-    
-    mouse_position = (x,y)
+    glbstate.mouse_position = (x,y)
 
 def main():
-    global window
-    
     freenect.sync_set_led(2)
     
     glut.glutInit()
@@ -161,7 +180,7 @@ def main():
                                 | glut.GLUT_ALPHA | glut.GLUT_DEPTH)
     glut.glutInitWindowSize(640, 480)
     
-    window = glut.glutCreateWindow("Point cloud test")
+    glbstate.window = glut.glutCreateWindow("Point cloud test")
     
     glut.glutDisplayFunc(display)
     glut.glutIdleFunc(display)

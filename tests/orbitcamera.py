@@ -40,9 +40,11 @@ class OrbitCamera(object):
     
     def zoom(self, dy):
         step = self.radius/100
-        if dy > 100:
-            dy = 100
+        if dy <= -100:
+            dy = -99
         self.radius += step*dy
+        if self.radius < 1.0:
+            self.radius = 1.0
     
     def get_position(self):
         return tuple(map(add, self.center, self.get_vector()))
