@@ -19,6 +19,15 @@ from pycuda.compiler import SourceModule
 import kinect_calib as kc
 
 cuda_source = """
+
+__device__ __constant__ float K[9];
+__device__ __constant__ float invK[9];
+
+__global__ void update_reconstruction(float* F, float* W, float* depth)
+{
+    
+}
+
 __global__ void cosa(float* vertices, int width)
 {
     const int x = threadIdx.x;
@@ -60,20 +69,29 @@ class DenseDemo(DemoBase):
         
         import pycuda.gl.autoinit
         
+        mod = SourceModule(cuda_source)
+        cosa = mod.get_function("cosa")
+        
+        # Set the global constant matrices.
+        K, _ = mod.get_global("K")
+        invK, _ = mod.get_global("invK")
+        drv.memcpy_htod(K, np.float32(kc.K_ir.ravel()))
+        drv.memcpy_htod(invK, np.float32(la.inv(kc.K_ir).ravel()))
+        
+        # Create a texture.
         self.gl_rgb_texture = gl.glGenTextures(1)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.gl_rgb_texture)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
         
+        # Create a vertex buffer.
         self.gl_vertex_array = gl.glGenBuffers(1)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
         gl.glBufferData(gl.GL_ARRAY_BUFFER, 100*32, None, gl.GL_DYNAMIC_COPY)
-        
+        # Register it with CUDA.
         self.cuda_buffer = cudagl.RegisteredBuffer(int(self.gl_vertex_array))
         
-        mod = SourceModule(cuda_source)
-        cosa = mod.get_function("cosa")
-        
+        # Modify the buffer with CUDA.
         mapping = self.cuda_buffer.map()
         ptr, _ = mapping.device_ptr_and_size()
         cosa(np.intp(ptr), np.int32(10),  block=(10,10,1), grid=(1,1))
@@ -81,7 +99,6 @@ class DenseDemo(DemoBase):
     
     def display(self):
         
-        gl.glColor3d(1.0, 1.0, 1.0)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
