@@ -1,5 +1,7 @@
 
-import sys
+from demobase import DemoBase
+
+import ctypes
 
 import numpy as np
 import numpy.linalg as la
@@ -9,20 +11,30 @@ import OpenGL.GLU as glu
 import OpenGL.GLUT as glut
 import freenect
 
-import pycuda.autoinit
+#import pycuda.autoinit
 import pycuda.driver as drv
 import pycuda.gl as cudagl
 from pycuda.compiler import SourceModule
 
-from orbitcamera import OrbitCamera
 import kinect_calib as kc
 
-mod = SourceModule("""
-__global__ void cosa()
+cuda_source = """
+__global__ void cosa(float* vertices, int width)
 {
+    const int x = threadIdx.x;
+    const int y = threadIdx.y;
+    int index = 8*(y*width + x);
+    vertices[index] = x*100.f;
+    vertices[index + 1] = y*100.f;
+    vertices[index + 2] = 10.f;
+    vertices[index + 3] = 1.f;
+    vertices[index + 4] = x/10.f;
+    vertices[index + 5] = y/10.f;
+    vertices[index + 6] = 1.f;
+    vertices[index + 7] = 1.f;
 }
-""")
-cosa = mod.get_function("cosa")
+"""
+#cosa = mod.get_function("cosa")
 
 class FreenectFusion(object):
     
@@ -35,119 +47,67 @@ class FreenectFusion(object):
         pass
     
 
-class CameraState:
-    NONE = 0
-    ROTATION = 1
-    TRANSLATION = 2
-    ZOOM = 3
-
-class GlobalState:
-    """Global state for the demo."""
-    window = None
+class DenseDemo(DemoBase):
     
-    key_state = [False]*256
-    mouse_position = None
+    def __init__(self, width, height):
+        super(DenseDemo, self).__init__(width, height)
+        
+        self.gl_rgb_texture = None
+        self.gl_vertex_array = None
     
-    camera = OrbitCamera()
-    camera_state = CameraState.NONE
+    def init_gl(self, width, height):
+        super(DenseDemo, self).init_gl(width, height)
+        
+        import pycuda.gl.autoinit
+        
+        self.gl_rgb_texture = gl.glGenTextures(1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.gl_rgb_texture)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        
+        self.gl_vertex_array = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, 100*32, None, gl.GL_DYNAMIC_COPY)
+        
+        self.cuda_buffer = cudagl.RegisteredBuffer(int(self.gl_vertex_array))
+        
+        mod = SourceModule(cuda_source)
+        cosa = mod.get_function("cosa")
+        
+        mapping = self.cuda_buffer.map()
+        ptr, _ = mapping.device_ptr_and_size()
+        cosa(np.intp(ptr), np.int32(10),  block=(10,10,1), grid=(1,1))
+        mapping.unmap()
     
-    gl_rgb_texture = None
-    gl_vertex_array = None
+    def display(self):
+        
+        gl.glColor3d(1.0, 1.0, 1.0)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
+        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glEnableClientState(gl.GL_COLOR_ARRAY)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 32, None)
+        gl.glColorPointer(4, gl.GL_FLOAT, 32, ctypes.c_void_p(16))
+        gl.glDrawArrays(gl.GL_POINTS, 0, 100)
+        
+        # Draw axes indicator.
+        gl.glPointSize(5)
+        gl.glBegin(gl.GL_POINTS)
+        gl.glColor3d(1, 0, 0)
+        gl.glVertex3d(100.0, 0, 0)
+        gl.glColor3d(0, 1, 0)
+        gl.glVertex3d(0, 100.0, 0)
+        gl.glColor3d(0, 0, 1)
+        gl.glVertex3d(0, 0, 100.0)
+        gl.glEnd()
     
-    #depth_map = np.array([123.6 * np.tan(i/2842.5 + 1.1863) for i in xrange(2048)])
-    #depth_map = np.array([1000.0 / (i * -0.0030711016 + 3.3309495161) for i in xrange(2048)])
-    #depth_map[2047] = 0.0
+    def keyboard_press_event(self, key, x, y):
+        if key == chr(27):
+            #freenect.sync_set_led(1)
+            #freenect.sync_stop()
+            pass
+        
+        super(DenseDemo, self).keyboard_press_event(key, x, y)
     
-    show_ir = False
-
-glbstate = GlobalState()
-
-def init_gl(width, height):
-    gl.glClearColor(0.2, 0.2, 0.2, 0.0)
-    gl.glEnable(gl.GL_DEPTH_TEST)
-    gl.glEnable(gl.GL_TEXTURE_2D)
-    glbstate.gl_rgb_texture = gl.glGenTextures(1)
-    gl.glBindTexture(gl.GL_TEXTURE_2D, glbstate.gl_rgb_texture)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-    
-    glbstate.gl_vertex_array = gl.glGenBuffers(1)
-    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, glbstate.gl_vertex_array)
-    gl.glBufferData(gl.GL_ARRAY_BUFFER, 200*16, NULL, gl.GL_DYNAMIC_COPY)
-    
-    
-    resize_event(width, height)
-
-def resize_event(width, height):
-    gl.glViewport(0, 0, width, height)
-    gl.glMatrixMode(gl.GL_PROJECTION)
-    gl.glLoadIdentity()
-    glu.gluPerspective(60, width/float(height), 50.0, 8000.0)
-    gl.glMatrixMode(gl.GL_MODELVIEW)
-
-def display():
-    gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-    glut.glutSwapBuffers()
-
-def keyboard_press_event(key, x, y):
-    if key == chr(27):
-        freenect.sync_set_led(1)
-        glut.glutDestroyWindow(glbstate.window)
-        sys.exit(0)
-    elif key == ' ':
-        print "Toggled the RGB/IR image."
-        glbstate.show_ir = not glbstate.show_ir
-    
-    glbstate.key_state[ord(key)] = True
-
-def keyboard_up_event(key, x, y):
-    glbstate.key_state[ord(key)] = False
-
-def mouse_button_event(button, state, x, y):
-    glbstate.mouse_position = (x,y)
-    
-    if state == glut.GLUT_UP:
-        glbstate.camera_state = CameraState.NONE
-    elif button == glut.GLUT_LEFT_BUTTON:
-        glbstate.camera_state = CameraState.ROTATION
-    elif button == glut.GLUT_RIGHT_BUTTON:
-        glbstate.camera_state = CameraState.ZOOM
-    elif button == glut.GLUT_MIDDLE_BUTTON:
-        glbstate.camera_state = CameraState.TRANSLATION
-
-def mouse_moved_event(x, y):
-    offset = map(sub, (x,y), glbstate.mouse_position)
-    
-    if glbstate.camera_state == CameraState.ROTATION:
-        glbstate.camera.rotate(*[i/100.0 for i in offset])
-    elif glbstate.camera_state == CameraState.TRANSLATION:
-        glbstate.camera.translate(offset[0]*3, -offset[1]*3)
-    elif glbstate.camera_state == CameraState.ZOOM:
-        glbstate.camera.zoom(offset[1])
-    
-    glbstate.mouse_position = (x,y)
-
-def main():
-    freenect.sync_set_led(2)
-    
-    glut.glutInit()
-    glut.glutInitDisplayMode(glut.GLUT_RGBA | glut.GLUT_DOUBLE
-                                | glut.GLUT_ALPHA | glut.GLUT_DEPTH)
-    glut.glutInitWindowSize(640, 480)
-    
-    glbstate.window = glut.glutCreateWindow("Point cloud test")
-    
-    glut.glutDisplayFunc(display)
-    glut.glutIdleFunc(display)
-    glut.glutReshapeFunc(resize_event)
-    glut.glutKeyboardFunc(keyboard_press_event)
-    glut.glutKeyboardUpFunc(keyboard_up_event)
-    glut.glutMouseFunc(mouse_button_event)
-    glut.glutMotionFunc(mouse_moved_event)
-    
-    init_gl(640, 480)
-    
-    glut.glutMainLoop()
 
 if __name__ == '__main__':
-    main()
+    DenseDemo(640, 480).run()
