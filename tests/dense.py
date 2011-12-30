@@ -20,10 +20,25 @@ import kinect_calib as kc
 
 cuda_source = """
 
-texture<float, cudaTextureType1D, cudaReadModeElementType> depth_texture;
+texture<float, cudaTextureType2D, cudaReadModeElementType> depth_texture;
 
 __device__ __constant__ float K[9];
 __device__ __constant__ float invK[9];
+
+inline __device__ float3 cross(float3 a, float3 b)
+{ 
+    return make_float3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x); 
+}
+
+inline __device__ float3 operator-(float3 a, float3 b)
+{
+    return make_float3(a.x-b.x, a.y-b.y, a.z-b.z);
+}
+
+inline __device__ float3 operator*(float s, float3 a)
+{
+    return make_float3(a.x * s, a.y * s, a.z * s);
+}
 
 __device__ float3 transform3(float* matrix, float3 v)
 {
@@ -34,9 +49,15 @@ __device__ float3 transform3(float* matrix, float3 v)
     return res;
 }
 
-__device__ float norm2(float3 v)
+__device__ float length(float3 v)
 {
     return sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
+}
+
+inline __device__ float3 normalize(float3 v)
+{
+    float invLen = 1.0f / length(v);
+    return invLen * v;
 }
 
 __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
@@ -59,14 +80,27 @@ __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
 }
 
 __global__ void measure(float3* vertices, float3* normals,
-                        int width, int height, size_t mem_width)
+                        int width, int height, size_t pitch)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
     
-    int index = mem_width*y + x;
+    if(x >= width || y >= height)
+        return;
+    
+    float3* current_vertex = (float3*)((char*)vertices + pitch*y) + x;
+    float3* current_normal = (float3*)((char*)normals + pitch*y) + x;
+    
     float3 u = make_float3(float(x), float(y), 1.f);
-    //vertices[index] = make_float3(tex1Dfetch(depth_texture, index)) * transform3(invK, u);
+    float3 v = make_float3(float(x+1), float(y), 1.f);
+    float3 w = make_float3(float(x), float(y+1), 1.f);
+    u = tex2D(depth_texture, x, y) * transform3(invK, u);
+    v = tex2D(depth_texture, x+1, y) * transform3(invK, v);
+    w = tex2D(depth_texture, x, y+1) * transform3(invK, w);
+    
+    float3 n = normalize(cross(v - u, w - u));
+    *current_vertex = u;
+    *current_normal = n;
 }
 
 __global__ void update_reconstruction(float* F, float* W,
@@ -94,13 +128,11 @@ __global__ void update_reconstruction(float* F, float* W,
     
     // Determine lambda.
     float3 aux = transform3(invK, x);
-    float lambda = norm2(aux);
+    float lambda = length(aux);
     
-    float R = tex1Dfetch(depth_texture, int(x.y)*depth_width + int(x.x));
-    if(x.x < 0.f || x.x >= depth_width || x.y < 0.f || x.y >= depth_height)
-        R = 0.f;
+    float R = tex2D(depth_texture, x.x, x.y);
     
-    lambda = R - norm2(p)/lambda;
+    lambda = R - length(p)/lambda;
     *F_data = min(1.f, lambda/mu);
     *W_data = 1.f;
     if(-lambda > mu || R == 0.f)
@@ -108,21 +140,6 @@ __global__ void update_reconstruction(float* F, float* W,
         *F_data = NAN;
         *W_data = 0.f;
     }
-}
-
-__global__ void cosa(float* vertices, int width)
-{
-    const int x = threadIdx.x;
-    const int y = threadIdx.y;
-    int index = 8*(y*width + x);
-    vertices[index] = x*100.f;
-    vertices[index + 1] = y*100.f;
-    vertices[index + 2] = 10.f;
-    vertices[index + 3] = 1.f;
-    vertices[index + 4] = x/10.f;
-    vertices[index + 5] = y/10.f;
-    vertices[index + 6] = 1.f;
-    vertices[index + 7] = 1.f;
 }
 """
 
@@ -132,14 +149,14 @@ class FreenectFusion(object):
         self.K_ir = K_ir
         self.K_rgb = K_rgb
         self.T_rel = T_rel
-        self.side = np.int32(side)
-        self.mu = np.float32(mu)
+        self.side = side
+        self.mu = mu
         
         # Process the module.
         self.module = SourceModule(cuda_source)
-        self.cosa = self.module.get_function("cosa")
         self.update_reconstruction = self.module.get_function("update_reconstruction")
         self.compute_depth = self.module.get_function("compute_depth")
+        self.measure = self.module.get_function("measure")
         self.depth_texture = self.module.get_texref("depth_texture")
         print self.update_reconstruction.local_size_bytes
         print self.update_reconstruction.num_regs
@@ -154,28 +171,41 @@ class FreenectFusion(object):
         print drv.mem_get_info()
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
+        self.vertices_gpu = gpuarray.empty((480,640), dtype=gpuarray.vec.float3)
         print drv.mem_get_info()
+        print self.vertices_gpu.strides
     
     def update(self, depth, rgb_img=None):
         
         # Compute the real world depths.
         # TODO: Determine the best block size.
         depth_gpu = gpuarray.to_gpu(np.float32(depth))
-        width = np.int32(depth_gpu.shape[1])
-        height = np.int32(depth_gpu.shape[0])
-        gridx = int((width - 1) // 16 + 1)
-        gridy = int((height - 1) // 16 + 1)
-        self.compute_depth(depth_gpu, width, height, np.int32(depth_gpu.strides[0]),
+        width = depth_gpu.shape[1]
+        height = depth_gpu.shape[0]
+        gridx = (width - 1) // 16 + 1
+        gridy = (height - 1) // 16 + 1
+        pitch = depth_gpu.strides[0]
+        self.compute_depth(depth_gpu, np.int32(width), np.int32(height), np.int32(pitch),
                             block=(16,16,1), grid=(gridx, gridy))
         self.depth_gpu = depth_gpu
-        depth_gpu.bind_to_texref(self.depth_texture)
         
+        # Prepare the depth array to be accessed as a texture.
+        descr = drv.ArrayDescriptor()
+        descr.width = width
+        descr.height = height
+        descr.format = drv.array_format.FLOAT
+        descr.num_channels = 1
+        self.depth_texture.set_address_2d(depth_gpu.gpudata, descr, pitch)
+        
+        # Extract vertices.
+        #self.measure(self.vertices_gpu, self.vertices_gpu, np.int32(width), np.int32(height),
+        #                        np.int32(pitch), block=(16,16,1), grid=(gridx, gridy))
         # Update the reconstruction.
-        gridx = int((self.side - 1) // 8 + 1)
-        for i in xrange(0, self.side, 8):
-            self.update_reconstruction(self.F_gpu, self.W_gpu, width, height,
-                                    self.side, self.mu, np.int32(i),
-                                    block=(8,8,8), grid=(gridx,gridx))
+        #gridx = int((self.side - 1) // 8 + 1)
+        #for i in xrange(0, self.side, 8):
+            #self.update_reconstruction(self.F_gpu, self.W_gpu, np.int32(width), np.int32(height),
+                                    #np.int32(self.side), np.int32(self.mu), np.int32(i),
+                                    #block=(8,8,8), grid=(gridx,gridx))
     
 
 class DenseDemo(DemoBase):
@@ -203,15 +233,13 @@ class DenseDemo(DemoBase):
         # Create a vertex buffer.
         self.gl_vertex_array = gl.glGenBuffers(1)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, 100*32, None, gl.GL_DYNAMIC_COPY)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*24, None, gl.GL_DYNAMIC_COPY)
+        self.gl_normal_array = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_normal_array)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*24, None, gl.GL_DYNAMIC_COPY)
         # Register it with CUDA.
-        self.cuda_buffer = cudagl.RegisteredBuffer(int(self.gl_vertex_array))
-        
-        # Modify the buffer with CUDA.
-        mapping = self.cuda_buffer.map()
-        ptr, _ = mapping.device_ptr_and_size()
-        self.ffusion.cosa(np.intp(ptr), np.int32(10),  block=(10,10,1), grid=(1,1))
-        mapping.unmap()
+        self.vertex_buffer = cudagl.RegisteredBuffer(int(self.gl_vertex_array))
+        self.normal_buffer = cudagl.RegisteredBuffer(int(self.gl_normal_array))
     
     def display(self):
         
@@ -219,12 +247,24 @@ class DenseDemo(DemoBase):
         #depth = np.zeros((480,640), dtype=np.float32)
         self.ffusion.update(depth)
         
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
+        vertex_map = self.vertex_buffer.map()
+        normal_map = self.normal_buffer.map()
+        ptr1, _ = vertex_map.device_ptr_and_size()
+        ptr2, _ = normal_map.device_ptr_and_size()
+        self.ffusion.measure(np.intp(ptr1), np.intp(ptr2),
+                np.int32(640), np.int32(480), np.int32(7680),
+                block=(16,16,1), grid=(40,30))
+        vertex_map.unmap()
+        normal_map.unmap()
+        
+        gl.glPointSize(1)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        gl.glVertexPointer(3, gl.GL_FLOAT, 32, None)
-        gl.glColorPointer(4, gl.GL_FLOAT, 32, ctypes.c_void_p(16))
-        gl.glDrawArrays(gl.GL_POINTS, 0, 100)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 12, None)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_normal_array)
+        gl.glColorPointer(3, gl.GL_FLOAT, 12, ctypes.c_void_p(0))
+        gl.glDrawArrays(gl.GL_POINTS, 0, 640*480)
         
         # Draw axes indicator.
         gl.glPointSize(5)
@@ -241,7 +281,7 @@ class DenseDemo(DemoBase):
         if key == chr(27):
             freenect.sync_set_led(1)
             freenect.sync_stop()
-            np.save("test", self.ffusion.F_gpu.get())
+            np.save("test", self.ffusion.vertices_gpu.get())
         
         super(DenseDemo, self).keyboard_press_event(key, x, y)
     
