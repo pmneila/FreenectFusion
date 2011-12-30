@@ -10,6 +10,9 @@ import freenect
 
 import kinect_calib as kc
 
+rot180 = np.eye(4)
+rot180[[0,1],[0,1]] = -1.0
+
 class PointCloudDemo(DemoBase):
     
     def __init__(self, width, height):
@@ -70,6 +73,7 @@ class PointCloudDemo(DemoBase):
         # Prepare the model-view matrix.
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glTranslated(0.0, 0.0, -1000.0)
+        gl.glMultMatrixd(rot180)
         gl.glPushMatrix()
         gl.glMultMatrixd(self.vertices_matrix)
         
@@ -94,6 +98,8 @@ class PointCloudDemo(DemoBase):
         # Draw axes indicator.
         gl.glPointSize(5)
         gl.glBegin(gl.GL_POINTS)
+        gl.glColor3d(1, 1, 1)
+        gl.glVertex3d(0, 0, 0)
         gl.glColor3d(1, 0, 0)
         gl.glVertex3d(100.0, 0, 0)
         gl.glColor3d(0, 1, 0)

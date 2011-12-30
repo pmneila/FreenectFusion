@@ -36,7 +36,7 @@ __device__ float3 transform3(float* matrix, float3 v)
 
 __device__ float norm2(float3 v)
 {
-    return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+    return sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
 }
 
 __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
@@ -58,7 +58,19 @@ __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
     row[x] = 1000.f / (row[x] * -0.0030711016f + 3.3309495161f);
 }
 
+__global__ void measure(float3* vertices, float3* normals,
+                        int width, int height, size_t mem_width)
+{
+    int x = blockDim.x * blockIdx.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+    
+    int index = mem_width*y + x;
+    float3 u = make_float3(float(x), float(y), 1.f);
+    //vertices[index] = make_float3(tex1Dfetch(depth_texture, index)) * transform3(invK, u);
+}
+
 __global__ void update_reconstruction(float* F, float* W,
+                        int depth_width, int depth_height,
                         int side, float mu, int init_slice)
 {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -72,7 +84,7 @@ __global__ void update_reconstruction(float* F, float* W,
     float3 p;
     p.x = (i - side/2) * 7.8125f;
     p.y = (j - side/2) * 7.8125f;
-    p.z = (k + side/2) * 7.8125f;
+    p.z = (k + side/4) * 7.8125f;
     
     // Project the point.
     float3 x = transform3(K, p);
@@ -84,8 +96,18 @@ __global__ void update_reconstruction(float* F, float* W,
     float3 aux = transform3(invK, x);
     float lambda = norm2(aux);
     
-    *F_data = norm2(p)/lambda;
-    *W_data = tex1Dfetch(depth_texture, int(x.y)*640 + int(x.x));
+    float R = tex1Dfetch(depth_texture, int(x.y)*depth_width + int(x.x));
+    if(x.x < 0.f || x.x >= depth_width || x.y < 0.f || x.y >= depth_height)
+        R = 0.f;
+    
+    lambda = R - norm2(p)/lambda;
+    *F_data = min(1.f, lambda/mu);
+    *W_data = 1.f;
+    if(-lambda > mu || R == 0.f)
+    {
+        *F_data = NAN;
+        *W_data = 0.f;
+    }
 }
 
 __global__ void cosa(float* vertices, int width)
@@ -151,7 +173,7 @@ class FreenectFusion(object):
         # Update the reconstruction.
         gridx = int((self.side - 1) // 8 + 1)
         for i in xrange(0, self.side, 8):
-            self.update_reconstruction(self.F_gpu, self.W_gpu, depth_gpu,
+            self.update_reconstruction(self.F_gpu, self.W_gpu, width, height,
                                     self.side, self.mu, np.int32(i),
                                     block=(8,8,8), grid=(gridx,gridx))
     
@@ -167,11 +189,10 @@ class DenseDemo(DemoBase):
     def init_gl(self, width, height):
         super(DenseDemo, self).init_gl(width, height)
         
-        freenect.sync_set_led(2)
-        
         import pycuda.gl.autoinit
         
         self.ffusion = FreenectFusion(kc.K_ir, kc.K_rgb, kc.T)
+        freenect.sync_set_led(2)
         
         # Create a texture.
         self.gl_rgb_texture = gl.glGenTextures(1)
@@ -220,7 +241,7 @@ class DenseDemo(DemoBase):
         if key == chr(27):
             freenect.sync_set_led(1)
             freenect.sync_stop()
-            np.save("test", self.ffusion.W_gpu.get())
+            np.save("test", self.ffusion.F_gpu.get())
         
         super(DenseDemo, self).keyboard_press_event(key, x, y)
     
