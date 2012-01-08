@@ -220,6 +220,7 @@ class FreenectFusion(object):
         
         self.depth_texture = self.module.get_texref("depth_texture")
         self.F_texture = self.module.get_texref("F_texture")
+        self.depth_texture.set_filter_mode(drv.filter_mode.POINT)
         self.F_texture.set_filter_mode(drv.filter_mode.LINEAR)
         print self.update_reconstruction.shared_size_bytes
         print self.update_reconstruction.num_regs
