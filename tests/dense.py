@@ -20,8 +20,8 @@ import kinect_calib as kc
 
 cuda_source = """
 
-texture<float, cudaTextureType2D, cudaReadModeElementType> depth_texture;
-texture<float, cudaTextureType3D, cudaReadModeElementType> F_texture;
+texture<float, 2, cudaReadModeElementType> depth_texture;
+texture<float, 3, cudaReadModeElementType> F_texture;
 
 __device__ __constant__ float K[9];
 __device__ __constant__ float invK[9];
@@ -222,8 +222,8 @@ class FreenectFusion(object):
         self.F_texture = self.module.get_texref("F_texture")
         self.depth_texture.set_filter_mode(drv.filter_mode.POINT)
         self.F_texture.set_filter_mode(drv.filter_mode.LINEAR)
-        print self.update_reconstruction.shared_size_bytes
-        print self.update_reconstruction.num_regs
+        #print self.update_reconstruction.shared_size_bytes
+        #print self.update_reconstruction.num_regs
         
         # Set the global constant matrices.
         mod = self.module # For short access.
@@ -336,8 +336,13 @@ class DenseDemo(DemoBase):
         super(DenseDemo, self).init_gl(width, height)
         
         import pycuda.gl.autoinit
+        print "CUDA version: %s" % str(drv.get_version())
+        print "CUDA driver version: %s" % drv.get_driver_version()
+        print "CUDA device: %s" % pycuda.gl.autoinit.device.name()
+        print "\tCompute capability: %s" % str(pycuda.gl.autoinit.device.compute_capability())
+        print "\tTotal memory: %s" % pycuda.gl.autoinit.device.total_memory()
         
-        self.ffusion = FreenectFusion(kc.K_ir, kc.K_rgb, kc.T)
+        self.ffusion = FreenectFusion(kc.K_ir, kc.K_rgb, kc.T, side=128)
         freenect.sync_set_led(2)
         
         # Create a texture.
