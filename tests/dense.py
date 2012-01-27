@@ -55,6 +55,25 @@ __device__ float3 transform3(float* matrix, float3 v)
     return res;
 }
 
+__device__ float3 transform3_affine(float* matrix, float3 v)
+{
+    float3 res;
+    res.x = matrix[0]*v.x + matrix[1]*v.y + matrix[2]*v.z + matrix[3];
+    res.y = matrix[4]*v.x + matrix[5]*v.y + matrix[6]*v.z + matrix[7];
+    res.z = matrix[8]*v.x + matrix[9]*v.y + matrix[10]*v.z + matrix[11];
+    return res;
+}
+
+__device__ float3 transform3_affine_inverse(float* matrix, float3 v)
+{
+    float3 res;
+    float3 v2 = make_float3(v.x-matrix[3], v.y-matrix[7], v.z-matrix[11]);
+    res.x = matrix[0]*v2.x + matrix[4]*v2.y + matrix[8]*v2.z;
+    res.y = matrix[1]*v2.x + matrix[5]*v2.y + matrix[9]*v2.z;
+    res.z = matrix[2]*v2.x + matrix[6]*v2.y + matrix[10]*v2.z;
+    return res;
+}
+
 inline __device__ float length(float3 v)
 {
     return sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
@@ -70,14 +89,14 @@ __device__ float3 gridToWorld(float3 p, int side)
 {
     return make_float3((p.x - side/2) * 7.8125f,
                         (p.y - side/2) * 7.8125f,
-                        (p.z + side/4) * 7.8125f);
+                        (p.z - side/2) * 7.8125f);
 }
 
 __device__ float3 worldToGrid(float3 p, int side)
 {
     return make_float3(p.x/7.8125f + side/2,
                         p.y/7.8125f + side/2,
-                        p.z/7.8125f - side/4);
+                        p.z/7.8125f + side/2);
 }
 
 __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
@@ -124,7 +143,8 @@ __global__ void measure(float3* vertices, float3* normals,
 }
 
 __global__ void update_reconstruction(float* F, float* W, float3* normals,
-                        size_t normals_pitch, int side, float mu, int init_slice)
+                        size_t normals_pitch, int side, float mu, int init_slice,
+                        float* Tgk)
 {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
@@ -137,7 +157,7 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
     float3 p = gridToWorld(make_float3(i,j,k), side);
     
     // Project the point.
-    float3 x = transform3(K, p);
+    float3 x = transform3(K, transform3_affine_inverse(Tgk, p));
     x.x = round(x.x/x.z);
     x.y = round(x.y/x.z);
     x.z = 1.f;
@@ -148,7 +168,8 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
     
     float R = tex2D(depth_texture, x.x, x.y);
     
-    lambda = R - length(p)/lambda;
+    float3 tgk = make_float3(Tgk[3], Tgk[7], Tgk[11]);
+    lambda = R - length(tgk - p)/lambda;
     float F_rk = fminf(1.f, lambda/mu);
     float W_rk = 1.f;
     if(F_rk < -1.f || R == 0.f)
@@ -160,7 +181,7 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
 
 __global__ void raycast(float3* vertices, float3* normals,
                         int width, int height, size_t pitch,
-                        int side, float mu)
+                        int side, float mu, float* Tgk)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -175,17 +196,17 @@ __global__ void raycast(float3* vertices, float3* normals,
     *current_normal = make_float3(1.f, 1.f, 1.f);
     
     float step = 150.f;
-    float3 p = worldToGrid(mindistance * ray, side);
+    float3 p = worldToGrid(transform3_affine(Tgk, mindistance * ray), side);
     float old_value = tex3D(F_texture, p.x, p.y, p.z);
     for(float distance = mindistance; distance < maxdistance; distance += step)
     {
-        p = worldToGrid(distance * ray, side);
+        p = worldToGrid(transform3_affine(Tgk, distance * ray), side);
         float value = tex3D(F_texture, p.x, p.y, p.z);
         
         if(old_value > 0 && value <= 0)
         {
             float t = distance - step - (step * old_value)/(value - old_value);
-            *current_vertex = t * ray;
+            *current_vertex = transform3_affine(Tgk, t * ray);
             return;
         }
         if(old_value < 0 && value > 0)
@@ -234,6 +255,8 @@ class FreenectFusion(object):
         
         # Reserve GPU variables.
         print drv.mem_get_info()
+        T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-500]], dtype=np.float32)
+        self.T_gk_gpu = gpuarray.to_gpu(T_gk)
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32) - 1000
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
         self.vertices_depth_gpu = gpuarray.empty((480,640), dtype=gpuarray.vec.float3)
@@ -311,6 +334,7 @@ class FreenectFusion(object):
         for i in xrange(0, self.side, 8):
             self.update_reconstruction(self.F_gpu, self.W_gpu, normals, np.intp(normals_pitch),
                                 np.int32(self.side), np.float32(self.mu), np.int32(i),
+                                self.T_gk_gpu,
                                 block=(8,8,8), grid=(grid2,grid2))
         
         # Copy F from gpu to F_array (binded to F_texture).
@@ -318,6 +342,7 @@ class FreenectFusion(object):
         
         self.raycast(vertices, normals, np.int32(width), np.int32(height),
                                 np.intp(normals_pitch), np.int32(self.side), np.float32(self.mu),
+                                self.T_gk_gpu,
                                 block=(16,16,1), grid=(gridx,gridy))
         if self.gl_buffers:
             vertices_map.unmap()
