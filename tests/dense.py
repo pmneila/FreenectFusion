@@ -29,7 +29,7 @@ __device__ __constant__ float invK[9];
 // Minimum distance for the reconstruction.
 __device__ __constant__ float mindistance = 500.f;
 // Maximum distance for the reconstruction.
-__device__ __constant__ float maxdistance = 2692.6f;
+__device__ __constant__ float maxdistance = 1581.14f;
 
 inline __device__ float3 cross(float3 a, float3 b)
 { 
@@ -195,7 +195,7 @@ __global__ void raycast(float3* vertices, float3* normals,
     float3 ray = normalize(transform3(invK, make_float3(float(x), float(y), 1.f)));
     *current_normal = make_float3(1.f, 1.f, 1.f);
     
-    float step = 150.f;
+    float step = 3.f*mu/4.f;
     float3 p = worldToGrid(transform3_affine(Tgk, mindistance * ray), side);
     float old_value = tex3D(F_texture, p.x, p.y, p.z);
     for(float distance = mindistance; distance < maxdistance; distance += step)
@@ -255,7 +255,7 @@ class FreenectFusion(object):
         
         # Reserve GPU variables.
         print drv.mem_get_info()
-        T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-500]], dtype=np.float32)
+        T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-1000]], dtype=np.float32)
         self.T_gk_gpu = gpuarray.to_gpu(T_gk)
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32) - 1000
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
