@@ -36,6 +36,11 @@ inline __device__ float3 cross(float3 a, float3 b)
     return make_float3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x); 
 }
 
+inline __device__ float3 operator+(float3 a, float3 b)
+{
+    return make_float3(a.x+b.x, a.y+b.y, a.z+b.z);
+}
+
 inline __device__ float3 operator-(float3 a, float3 b)
 {
     return make_float3(a.x-b.x, a.y-b.y, a.z-b.z);
@@ -118,6 +123,9 @@ __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
     row[x] = 1000.f / (row[x] * -0.0030711016f + 3.3309495161f);
 }
 
+/**
+ * Generate vertices and normals from a depth stored in depth_texture.
+ */
 __global__ void measure(float3* vertices, float3* normals,
                         int width, int height, size_t pitch)
 {
@@ -169,8 +177,8 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
     float R = tex2D(depth_texture, x.x, x.y);
     
     float3 tgk = make_float3(Tgk[3], Tgk[7], Tgk[11]);
-    lambda = R - length(tgk - p)/lambda;
-    float F_rk = fminf(1.f, lambda/mu);
+    float eta = R - length(tgk - p)/lambda;
+    float F_rk = fminf(1.f, eta/mu);
     float W_rk = 1.f;
     if(F_rk < -1.f || R == 0.f)
         return;
@@ -193,20 +201,23 @@ __global__ void raycast(float3* vertices, float3* normals,
     float3* current_normal = (float3*)((char*)normals + pitch*y) + x;
     
     float3 ray = normalize(transform3(invK, make_float3(float(x), float(y), 1.f)));
+    float3 tgk = make_float3(Tgk[3], Tgk[7], Tgk[11]);
+    ray = transform3_affine(Tgk, ray) - tgk;
+    
     *current_normal = make_float3(1.f, 1.f, 1.f);
     
     float step = 3.f*mu/4.f;
-    float3 p = worldToGrid(transform3_affine(Tgk, mindistance * ray), side);
+    float3 p = worldToGrid(tgk + mindistance * ray, side);
     float old_value = tex3D(F_texture, p.x, p.y, p.z);
     for(float distance = mindistance; distance < maxdistance; distance += step)
     {
-        p = worldToGrid(transform3_affine(Tgk, distance * ray), side);
+        p = worldToGrid(tgk + distance * ray, side);
         float value = tex3D(F_texture, p.x, p.y, p.z);
         
         if(old_value > 0 && value <= 0)
         {
             float t = distance - step - (step * old_value)/(value - old_value);
-            *current_vertex = transform3_affine(Tgk, t * ray);
+            *current_vertex = t * ray + tgk;
             return;
         }
         if(old_value < 0 && value > 0)
@@ -368,7 +379,7 @@ class DenseDemo(DemoBase):
         print "\tTotal memory: %s" % pycuda.gl.autoinit.device.total_memory()
         
         self.ffusion = FreenectFusion(kc.K_ir, kc.K_rgb, kc.T, side=128)
-        freenect.sync_set_led(2)
+        #freenect.sync_set_led(2)
         
         # Create a texture.
         self.gl_rgb_texture = gl.glGenTextures(1)
@@ -416,7 +427,7 @@ class DenseDemo(DemoBase):
     
     def keyboard_press_event(self, key, x, y):
         if key == chr(27):
-            freenect.sync_set_led(1)
+            #freenect.sync_set_led(1)
             freenect.sync_stop()
             #np.save("F", self.ffusion.F_gpu.get())
             #np.save("W", self.ffusion.W_gpu.get())
