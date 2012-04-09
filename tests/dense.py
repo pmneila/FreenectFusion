@@ -217,7 +217,7 @@ __global__ void raycast(float3* vertices, float3* normals,
         if(old_value > 0 && value <= 0)
         {
             float t = distance - step - (step * old_value)/(value - old_value);
-            *current_vertex = t * ray + tgk;
+            *current_vertex = tgk + t * ray;
             return;
         }
         if(old_value < 0 && value > 0)
