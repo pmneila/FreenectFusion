@@ -90,18 +90,18 @@ __device__ float3 normalize(float3 v)
     return invLen * v;
 }
 
-__device__ float3 gridToWorld(float3 p, int side)
+__device__ float3 gridToWorld(float3 p, int side, float units_per_voxel)
 {
-    return make_float3((p.x - side/2) * 7.8125f,
-                        (p.y - side/2) * 7.8125f,
-                        (p.z - side/2) * 7.8125f);
+    return make_float3((p.x - side/2) * units_per_voxel,
+                        (p.y - side/2) * units_per_voxel,
+                        (p.z - side/2) * units_per_voxel);
 }
 
-__device__ float3 worldToGrid(float3 p, int side)
+__device__ float3 worldToGrid(float3 p, int side, float units_per_voxel)
 {
-    return make_float3(p.x/7.8125f + side/2,
-                        p.y/7.8125f + side/2,
-                        p.z/7.8125f + side/2);
+    return make_float3(p.x/units_per_voxel + side/2,
+                        p.y/units_per_voxel + side/2,
+                        p.z/units_per_voxel + side/2);
 }
 
 __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
@@ -151,8 +151,8 @@ __global__ void measure(float3* vertices, float3* normals,
 }
 
 __global__ void update_reconstruction(float* F, float* W, float3* normals,
-                        size_t normals_pitch, int side, float mu, int init_slice,
-                        float* Tgk)
+                        size_t normals_pitch, int side, float units_per_voxel,
+                        float mu, int init_slice, float* Tgk)
 {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
@@ -162,7 +162,7 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
     float* current_W = W + k*side*side + j*side + i;
     
     // Point 3D.
-    float3 p = gridToWorld(make_float3(i,j,k), side);
+    float3 p = gridToWorld(make_float3(i,j,k), side, units_per_voxel);
     
     // Project the point.
     float3 x = transform3(K, transform3_affine_inverse(Tgk, p));
@@ -183,13 +183,16 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
     if(F_rk < -1.f || R == 0.f)
         return;
     
-    *current_F = (*current_W * *current_F + W_rk * F_rk)/(*current_W + W_rk);
+    if(*current_F < -2.f)
+        *current_F = F_rk;
+    else
+        *current_F = (*current_W * *current_F + W_rk * F_rk)/(*current_W + W_rk);
     *current_W = min(*current_W + W_rk, 10.f);
 }
 
 __global__ void raycast(float3* vertices, float3* normals,
                         int width, int height, size_t pitch,
-                        int side, float mu, float* Tgk)
+                        int side, float units_per_voxel, float mu, float* Tgk)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -207,22 +210,19 @@ __global__ void raycast(float3* vertices, float3* normals,
     *current_normal = make_float3(1.f, 1.f, 1.f);
     
     float step = 3.f*mu/4.f;
-    float3 p = worldToGrid(tgk + mindistance * ray, side);
+    float3 p = worldToGrid(tgk + mindistance * ray, side, units_per_voxel);
     float old_value = tex3D(F_texture, p.x, p.y, p.z);
     for(float distance = mindistance; distance < maxdistance; distance += step)
     {
-        p = worldToGrid(tgk + distance * ray, side);
+        p = worldToGrid(tgk + distance * ray, side, units_per_voxel);
         float value = tex3D(F_texture, p.x, p.y, p.z);
         
+        if(value < -2 || (old_value < 0 && value > 0))
+            break;
         if(old_value > 0 && value <= 0)
         {
             float t = distance - step - (step * old_value)/(value - old_value);
             *current_vertex = tgk + t * ray;
-            return;
-        }
-        if(old_value < 0 && value > 0)
-        {
-            *current_vertex = make_float3(0.f, 0.f, 0.f);
             return;
         }
         
@@ -235,13 +235,13 @@ __global__ void raycast(float3* vertices, float3* normals,
 
 class FreenectFusion(object):
     
-    def __init__(self, K_ir, K_rgb, T_rel, side=256, mu=200.0):
+    def __init__(self, K_ir, K_rgb, T_rel, side=256, units_per_voxel=7.8125, mu=200.0):
         self.K_ir = K_ir
         self.K_rgb = K_rgb
         self.T_rel = T_rel
         self.side = side
+        self.units_per_voxel = units_per_voxel
         self.mu = mu
-        self.gl_buffers = False
         
         # Process the module.
         self.module = SourceModule(cuda_source)
@@ -266,14 +266,20 @@ class FreenectFusion(object):
         
         # Reserve GPU variables.
         print drv.mem_get_info()
+        self.buffers = {}
         T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-1000]], dtype=np.float32)
         self.T_gk_gpu = gpuarray.to_gpu(T_gk)
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32) - 1000
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
-        self.vertices_depth_gpu = gpuarray.empty((480,640), dtype=gpuarray.vec.float3)
-        self.normals_depth_gpu = gpuarray.empty((480,640), dtype=gpuarray.vec.float3)
-        self.vertices_F_gpu = gpuarray.empty((480,640), dtype=gpuarray.vec.float3)
-        self.normals_F_gpu = gpuarray.empty((480,640), dtype=gpuarray.vec.float3)
+        #self.buffers["measure"] = (gpuarray.empty((480,640), dtype=gpuarray.vec.float3), 
+                                    #gpuarray.empty((480,640), dtype=gpuarray.vec.float3))
+        #self.buffers["model"] = (gpuarray.empty((480,640), dtype=gpuarray.vec.float3),
+                                    #gpuarray.empty((480,640), dtype=gpuarray.vec.float3))
+        vertex_buffer, normal_buffer = gl.glGenBuffers(2)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vertex_buffer)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*12, None, gl.GL_DYNAMIC_COPY)
+        self.buffers["measure"] = vertices, normals
+        self.buffers["model"] = gl.glGenBuffers(2)
         print drv.mem_get_info()
         
         self._prepare_F_texture()
@@ -301,11 +307,28 @@ class FreenectFusion(object):
         self.F_gpu_to_array_copy()
         self.F_texture.set_array(F_array)
     
-    def set_gl_buffers(self, vertices, normals):
+    def grid_to_world(self, p):
+        return (np.asarray(p) - self.side/2) * self.units_per_voxel
+    
+    def get_bounding_box(self):
         
-        self.gl_buffers = True
-        self.gl_vertex_buffer = cudagl.RegisteredBuffer(int(vertices))
-        self.gl_normal_buffer = cudagl.RegisteredBuffer(int(normals))
+        p1 = self.grid_to_world([0]*3)
+        p2 = self.grid_to_world([self.side]*3)
+        return p1, p2
+    
+    #def set_gl_buffers(self, buffer_type='model', vertices, normals):
+        
+        #gl_vertex_buffer = cudagl.RegisteredBuffer(int(vertices))
+        #gl_normal_buffer = cudagl.RegisteredBuffer(int(normals))
+        #self.gl_buffers[buffer_type] = (gl_vertex_buffer, gl_normal_buffer)
+    
+    #def map_buffers(self, buffer_type):
+        
+        #if buffer_type in self.gl_buffers:
+            #vertices_map = 
+    
+    #def unmap_buffers(self, buffer_type):
+        #pass
     
     def update(self, depth, rgb_img=None):
         
@@ -338,13 +361,14 @@ class FreenectFusion(object):
             vertices = np.intp(vertices_map.device_ptr_and_size()[0])
             normals = np.intp(normals_map.device_ptr_and_size()[0])
         
-        self.measure(self.vertices_F_gpu, self.normals_F_gpu, np.int32(width), np.int32(height),
+        self.measure(self.buffers["measure"][0], self.buffers["measure"][1], np.int32(width), np.int32(height),
                                 np.intp(normals_pitch), block=(16,16,1), grid=(gridx, gridy))
         # Update the reconstruction.
         grid2 = int((self.side - 1) // 8 + 1)
         for i in xrange(0, self.side, 8):
             self.update_reconstruction(self.F_gpu, self.W_gpu, normals, np.intp(normals_pitch),
-                                np.int32(self.side), np.float32(self.mu), np.int32(i),
+                                np.int32(self.side), np.float32(self.units_per_voxel),
+                                np.float32(self.mu), np.int32(i),
                                 self.T_gk_gpu,
                                 block=(8,8,8), grid=(grid2,grid2))
         
@@ -352,8 +376,9 @@ class FreenectFusion(object):
         self.F_gpu_to_array_copy()
         
         self.raycast(vertices, normals, np.int32(width), np.int32(height),
-                                np.intp(normals_pitch), np.int32(self.side), np.float32(self.mu),
-                                self.T_gk_gpu,
+                                np.intp(normals_pitch),
+                                np.int32(self.side), np.float32(self.units_per_voxel),
+                                np.float32(self.mu), self.T_gk_gpu,
                                 block=(16,16,1), grid=(gridx,gridy))
         if self.gl_buffers:
             vertices_map.unmap()
@@ -379,6 +404,7 @@ class DenseDemo(DemoBase):
         print "\tTotal memory: %s" % pycuda.gl.autoinit.device.total_memory()
         
         self.ffusion = FreenectFusion(kc.K_ir, kc.K_rgb, kc.T, side=128)
+        self.bbox = self.ffusion.get_bounding_box()
         #freenect.sync_set_led(2)
         
         # Create a texture.
@@ -423,6 +449,37 @@ class DenseDemo(DemoBase):
         gl.glVertex3d(0, 100.0, 0)
         gl.glColor3d(0, 0, 1)
         gl.glVertex3d(0, 0, 100.0)
+        gl.glEnd()
+        
+        # Draw bounding box.
+        self.draw_bounding_box()
+    
+    def draw_bounding_box(self):
+        p1, p2 = self.bbox
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glColor3d(1, 1, 1)
+        gl.glVertex3d(p1[0], p1[1], p1[2])
+        gl.glVertex3d(p2[0], p1[1], p1[2])
+        gl.glVertex3d(p2[0], p2[1], p1[2])
+        gl.glVertex3d(p1[0], p2[1], p1[2])
+        gl.glEnd()
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glColor3d(1, 1, 1)
+        gl.glVertex3d(p1[0], p1[1], p2[2])
+        gl.glVertex3d(p2[0], p1[1], p2[2])
+        gl.glVertex3d(p2[0], p2[1], p2[2])
+        gl.glVertex3d(p1[0], p2[1], p2[2])
+        gl.glEnd()
+        gl.glBegin(gl.GL_LINES)
+        gl.glColor3d(1, 1, 1)
+        gl.glVertex3d(p1[0], p1[1], p1[2])
+        gl.glVertex3d(p1[0], p1[1], p2[2])
+        gl.glVertex3d(p2[0], p1[1], p1[2])
+        gl.glVertex3d(p2[0], p1[1], p2[2])
+        gl.glVertex3d(p2[0], p2[1], p1[2])
+        gl.glVertex3d(p2[0], p2[1], p2[2])
+        gl.glVertex3d(p1[0], p2[1], p1[2])
+        gl.glVertex3d(p1[0], p2[1], p2[2])
         gl.glEnd()
     
     def keyboard_press_event(self, key, x, y):
