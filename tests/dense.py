@@ -1,4 +1,6 @@
 
+from operator import methodcaller
+
 from demobase import DemoBase
 
 import ctypes
@@ -21,6 +23,7 @@ import kinect_calib as kc
 cuda_source = """
 
 texture<float, 2, cudaReadModeElementType> depth_texture;
+texture<float, 2, cudaReadModeElementType> smooth_depth_texture;
 texture<float, 3, cudaReadModeElementType> F_texture;
 
 __device__ __constant__ float K[9];
@@ -30,6 +33,11 @@ __device__ __constant__ float invK[9];
 __device__ __constant__ float mindistance = 500.f;
 // Maximum distance for the reconstruction.
 __device__ __constant__ float maxdistance = 1581.14f;
+
+inline __device__ float length2(float2 v)
+{
+    return sqrtf(v.x*v.x + v.y*v.y);
+}
 
 inline __device__ float3 cross(float3 a, float3 b)
 { 
@@ -90,6 +98,11 @@ __device__ float3 normalize(float3 v)
     return invLen * v;
 }
 
+__device__ float gaussian(float t, float sigma)
+{
+    return exp(-t*t/(sigma*sigma));
+}
+
 __device__ float3 gridToWorld(float3 p, int side, float units_per_voxel)
 {
     return make_float3((p.x - side/2) * units_per_voxel,
@@ -123,11 +136,41 @@ __global__ void compute_depth(float* depth, int width, int height, size_t pitch)
     row[x] = 1000.f / (row[x] * -0.0030711016f + 3.3309495161f);
 }
 
+__global__ void compute_smooth_depth(float* smooth_depth,
+                        int width, int height, size_t pitch,
+                        float sigma1, float sigma2)
+{
+    int x = blockDim.x * blockIdx.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+    
+    if(x >= width || y >= height)
+        return;
+    
+    float* current_smooth_depth = (float*)((char*)smooth_depth + pitch*y) + x;
+    
+    float depth1 = tex2D(depth_texture, x, y);
+    float cum = 0.f;
+    float weight_cum = 0.f;
+    for(int i=-5; i<=5; ++i)
+        for(int j=-5; j<=5; ++j)
+        {
+            float depth2 = tex2D(depth_texture, x+i, y+j);
+            float distance1 = length2(make_float2(i,j));
+            float distance2 = depth1 - depth2;
+            float weight1 = gaussian(distance1, sigma1);
+            float weight2 = gaussian(distance2, sigma2);
+            weight_cum += weight1 * weight2;
+            cum += depth1 * weight1 * weight2;
+        }
+    cum /= weight_cum;
+    *current_smooth_depth = cum;
+}
+
 /**
  * Generate vertices and normals from a depth stored in depth_texture.
  */
-__global__ void measure(float3* vertices, float3* normals,
-                        int width, int height, size_t pitch)
+__global__ void measure(float3* vertices, float3* normals, float* mask,
+                        int width, int height, size_t pitch, size_t mask_pitch)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -137,17 +180,20 @@ __global__ void measure(float3* vertices, float3* normals,
     
     float3* current_vertex = (float3*)((char*)vertices + pitch*y) + x;
     float3* current_normal = (float3*)((char*)normals + pitch*y) + x;
+    float* current_mask = (float*)((char*)mask + mask_pitch*y) + x;
     
     float3 u = make_float3(float(x), float(y), 1.f);
     float3 v = make_float3(float(x+1), float(y), 1.f);
     float3 w = make_float3(float(x), float(y+1), 1.f);
-    u = tex2D(depth_texture, x, y) * transform3(invK, u);
+    float depth = tex2D(depth_texture, x, y);
+    u = depth * transform3(invK, u);
     v = tex2D(depth_texture, x+1, y) * transform3(invK, v);
     w = tex2D(depth_texture, x, y+1) * transform3(invK, w);
     
     float3 n = normalize(cross(v - u, w - u));
     *current_vertex = u;
     *current_normal = n;
+    *current_mask = depth < 0.01f;
 }
 
 __global__ void update_reconstruction(float* F, float* W, float3* normals,
@@ -223,6 +269,10 @@ __global__ void raycast(float3* vertices, float3* normals,
         {
             float t = distance - step - (step * old_value)/(value - old_value);
             *current_vertex = tgk + t * ray;
+            float valuex = tex3D(F_texture, p.x-1, p.y, p.z);
+            float valuey = tex3D(F_texture, p.x, p.y-1, p.z);
+            float valuez = tex3D(F_texture, p.x, p.y, p.z-1);
+            *current_normal = normalize(make_float3(valuex-value, valuey-value, valuez-value));
             return;
         }
         
@@ -247,12 +297,15 @@ class FreenectFusion(object):
         self.module = SourceModule(cuda_source)
         self.update_reconstruction = self.module.get_function("update_reconstruction")
         self.compute_depth = self.module.get_function("compute_depth")
+        self.compute_smooth_depth = self.module.get_function("compute_smooth_depth")
         self.measure = self.module.get_function("measure")
         self.raycast = self.module.get_function("raycast")
         
         self.depth_texture = self.module.get_texref("depth_texture")
+        self.smooth_depth_texture = self.module.get_texref("smooth_depth_texture")
         self.F_texture = self.module.get_texref("F_texture")
         self.depth_texture.set_filter_mode(drv.filter_mode.POINT)
+        self.smooth_depth_texture.set_filter_mode(drv.filter_mode.POINT)
         self.F_texture.set_filter_mode(drv.filter_mode.LINEAR)
         #print self.update_reconstruction.shared_size_bytes
         #print self.update_reconstruction.num_regs
@@ -267,19 +320,21 @@ class FreenectFusion(object):
         # Reserve GPU variables.
         print drv.mem_get_info()
         self.buffers = {}
-        T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-1000]], dtype=np.float32)
-        self.T_gk_gpu = gpuarray.to_gpu(T_gk)
+        self.T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-1000],[0,0,0,1]], dtype=np.float32)
+        self.T_gk_gpu = gpuarray.to_gpu(self.T_gk[:3])
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32) - 1000
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
-        #self.buffers["measure"] = (gpuarray.empty((480,640), dtype=gpuarray.vec.float3), 
-                                    #gpuarray.empty((480,640), dtype=gpuarray.vec.float3))
-        #self.buffers["model"] = (gpuarray.empty((480,640), dtype=gpuarray.vec.float3),
-                                    #gpuarray.empty((480,640), dtype=gpuarray.vec.float3))
-        vertex_buffer, normal_buffer = gl.glGenBuffers(2)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vertex_buffer)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*12, None, gl.GL_DYNAMIC_COPY)
-        self.buffers["measure"] = vertices, normals
-        self.buffers["model"] = gl.glGenBuffers(2)
+        self.mask_gpu = gpuarray.zeros((480,640), dtype=np.float32)
+        self.smooth_depth_gpu = gpuarray.zeros((480,640), dtype=np.float32)
+        
+        for buffer_type in ['measure', 'raycast']:
+            buffers = gl.glGenBuffers(2)
+            for b in buffers:
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, b)
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*12, None, gl.GL_DYNAMIC_COPY)
+            buffers = map(lambda x: cudagl.RegisteredBuffer(int(x)), buffers)
+            self.buffers[buffer_type] = buffers
+        
         print drv.mem_get_info()
         
         self._prepare_F_texture()
@@ -316,19 +371,8 @@ class FreenectFusion(object):
         p2 = self.grid_to_world([self.side]*3)
         return p1, p2
     
-    #def set_gl_buffers(self, buffer_type='model', vertices, normals):
-        
-        #gl_vertex_buffer = cudagl.RegisteredBuffer(int(vertices))
-        #gl_normal_buffer = cudagl.RegisteredBuffer(int(normals))
-        #self.gl_buffers[buffer_type] = (gl_vertex_buffer, gl_normal_buffer)
-    
-    #def map_buffers(self, buffer_type):
-        
-        #if buffer_type in self.gl_buffers:
-            #vertices_map = 
-    
-    #def unmap_buffers(self, buffer_type):
-        #pass
+    def get_gl_buffers(self, buffer_type='raycast'):
+        return map(methodcaller("gl_handle"), self.buffers[buffer_type])
     
     def update(self, depth, rgb_img=None):
         
@@ -351,18 +395,25 @@ class FreenectFusion(object):
         descr.num_channels = 1
         self.depth_texture.set_address_2d(depth_gpu.gpudata, descr, pitch)
         
-        # Extract vertices.
-        vertices = self.vertices_F_gpu
-        normals = self.normals_F_gpu
-        normals_pitch = self.normals_F_gpu.strides[0]
-        if self.gl_buffers:
-            vertices_map = self.gl_vertex_buffer.map()
-            normals_map = self.gl_normal_buffer.map()
-            vertices = np.intp(vertices_map.device_ptr_and_size()[0])
-            normals = np.intp(normals_map.device_ptr_and_size()[0])
+        # Smooth depth.
+        # pitch = self.smooth_depth_gpu.strides[0]
+        # self.compute_smooth_depth(self.smooth_depth_gpu, np.int32(width), np.int32(height),
+        #                     np.intp(pitch), np.float32(10.0), np.float32(10000.0),
+        #                     block=(16,16,1), grid=(gridx, gridy))
+        #self.smooth_depth_texture.set_address_2d(depth_gpu.gpudata, descr, pitch)
         
-        self.measure(self.buffers["measure"][0], self.buffers["measure"][1], np.int32(width), np.int32(height),
-                                np.intp(normals_pitch), block=(16,16,1), grid=(gridx, gridy))
+        # Measure
+        normals_pitch = 640*12
+        mask_pitch = self.mask_gpu.strides[0]
+        vertex_map, normal_map = map(methodcaller("map"), self.buffers["measure"])
+        vertices = np.intp(vertex_map.device_ptr_and_size()[0])
+        normals = np.intp(normal_map.device_ptr_and_size()[0])
+        self.measure(vertices, normals, self.mask_gpu, np.int32(width), np.int32(height),
+                                np.intp(normals_pitch), np.intp(mask_pitch),
+                                block=(16,16,1), grid=(gridx, gridy))
+        vertex_map.unmap()
+        normal_map.unmap()
+        
         # Update the reconstruction.
         grid2 = int((self.side - 1) // 8 + 1)
         for i in xrange(0, self.side, 8):
@@ -375,14 +426,17 @@ class FreenectFusion(object):
         # Copy F from gpu to F_array (binded to F_texture).
         self.F_gpu_to_array_copy()
         
+        # Raycast.
+        vertex_map, normal_map = map(methodcaller("map"), self.buffers["raycast"])
+        vertices = np.intp(vertex_map.device_ptr_and_size()[0])
+        normals = np.intp(normal_map.device_ptr_and_size()[0])
         self.raycast(vertices, normals, np.int32(width), np.int32(height),
                                 np.intp(normals_pitch),
                                 np.int32(self.side), np.float32(self.units_per_voxel),
                                 np.float32(self.mu), self.T_gk_gpu,
                                 block=(16,16,1), grid=(gridx,gridy))
-        if self.gl_buffers:
-            vertices_map.unmap()
-            normals_map.unmap()
+        vertex_map.unmap()
+        normal_map.unmap()
     
 
 class DenseDemo(DemoBase):
@@ -392,6 +446,8 @@ class DenseDemo(DemoBase):
         
         self.gl_rgb_texture = None
         self.gl_vertex_array = None
+        
+        self.draw_flags = {'measure': False, 'raycast': True}
     
     def init_gl(self, width, height):
         super(DenseDemo, self).init_gl(width, height)
@@ -412,16 +468,6 @@ class DenseDemo(DemoBase):
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.gl_rgb_texture)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        
-        # Create a vertex and normal buffer.
-        self.gl_vertex_array = gl.glGenBuffers(1)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*12, None, gl.GL_DYNAMIC_COPY)
-        self.gl_normal_array = gl.glGenBuffers(1)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_normal_array)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*12, None, gl.GL_DYNAMIC_COPY)
-        # Register them with CUDA.
-        self.ffusion.set_gl_buffers(self.gl_vertex_array, self.gl_normal_array)
     
     def display(self):
         
@@ -431,14 +477,31 @@ class DenseDemo(DemoBase):
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glRotatef(180, 0, 0, 1)
         
-        gl.glPointSize(1)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_vertex_array)
-        gl.glVertexPointer(3, gl.GL_FLOAT, 12, None)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.gl_normal_array)
-        gl.glColorPointer(3, gl.GL_FLOAT, 12, ctypes.c_void_p(0))
-        gl.glDrawArrays(gl.GL_POINTS, 0, 640*480)
+        
+        # Plot measure.
+        if self.draw_flags['measure']:
+            gl.glPushMatrix()
+            gl.glMultMatrixf(self.ffusion.T_gk.T)
+            gl.glPointSize(1)
+            vertices, normals = self.ffusion.get_gl_buffers('measure')
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vertices)
+            gl.glVertexPointer(3, gl.GL_FLOAT, 12, None)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, normals)
+            gl.glColorPointer(3, gl.GL_FLOAT, 12, ctypes.c_void_p(0))
+            gl.glDrawArrays(gl.GL_POINTS, 0, 640*480)
+            gl.glPopMatrix()
+        
+        # Plot raycast.
+        if self.draw_flags['raycast']:
+            gl.glPointSize(1)
+            vertices, normals = self.ffusion.get_gl_buffers('raycast')
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vertices)
+            gl.glVertexPointer(3, gl.GL_FLOAT, 12, None)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, normals)
+            gl.glColorPointer(3, gl.GL_FLOAT, 12, ctypes.c_void_p(0))
+            gl.glDrawArrays(gl.GL_POINTS, 0, 640*480)
         
         # Draw axes indicator.
         gl.glPointSize(5)
@@ -488,6 +551,10 @@ class DenseDemo(DemoBase):
             freenect.sync_stop()
             #np.save("F", self.ffusion.F_gpu.get())
             #np.save("W", self.ffusion.W_gpu.get())
+        if key == 'm':
+            self.draw_flags['measure'] ^= True
+        if key == 'r':
+            self.draw_flags['raycast'] ^= True
         
         super(DenseDemo, self).keyboard_press_event(key, x, y)
     
