@@ -39,6 +39,11 @@ inline __device__ float length2(float2 v)
     return sqrtf(v.x*v.x + v.y*v.y);
 }
 
+inline __device__ float dot(float3 a, float3 b)
+{
+    return a.x*b.x + a.y*b.y + a.z*b.z;
+}
+
 inline __device__ float3 cross(float3 a, float3 b)
 { 
     return make_float3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x); 
@@ -170,17 +175,17 @@ __global__ void compute_smooth_depth(float* smooth_depth,
  * Generate vertices and normals from a depth stored in depth_texture.
  */
 __global__ void measure(float3* vertices, float3* normals, float* mask,
-                        int width, int height, size_t pitch, size_t mask_pitch)
+                        int width, int height, size_t pitch)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
+    int thid = width*y + x;
     
     if(x >= width || y >= height)
         return;
     
     float3* current_vertex = (float3*)((char*)vertices + pitch*y) + x;
     float3* current_normal = (float3*)((char*)normals + pitch*y) + x;
-    float* current_mask = (float*)((char*)mask + mask_pitch*y) + x;
     
     float3 u = make_float3(float(x), float(y), 1.f);
     float3 v = make_float3(float(x+1), float(y), 1.f);
@@ -193,7 +198,7 @@ __global__ void measure(float3* vertices, float3* normals, float* mask,
     float3 n = normalize(cross(v - u, w - u));
     *current_vertex = u;
     *current_normal = n;
-    *current_mask = depth < 0.01f;
+    mask[thid] = depth < 0.01f;
 }
 
 __global__ void update_reconstruction(float* F, float* W, float3* normals,
@@ -281,6 +286,97 @@ __global__ void raycast(float3* vertices, float3* normals,
     *current_vertex = make_float3(0.f, 0.f, 0.f);
 }
 
+__device__ float3 project(float* K, float* T, float3 point)
+{
+    return transform3(K, transform3_affine(T, point));
+}
+
+__device__ int2 hom2cart(float3 point)
+{
+    return make_int2(roundf(point.x/point.z), roundf(point.y/point.z));
+}
+
+__global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
+                        float3* vertices_measure, float3* normals_measure,
+                        float3* vertices_raycast, float3* normals_raycast,
+                        int width, int height,
+                        size_t AA_pitch, size_t Ab_pitch,
+                        float* mask, float* Tgk, float* Tgk1_k,
+                        float threshold_distance)
+{
+    int x = blockDim.x * blockIdx.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+    int thid = width*y + x;
+    
+    if(x >= width || y >= height)
+        return;
+    
+    float* current_AA = (float*)((char*)AA + AA_pitch * thid);
+    float* current_Ab = (float*)((char*)Ab + Ab_pitch * thid);
+    
+    float3 vertex_measure = vertices_measure[thid];
+    
+    // Get the corresponding pixel in the raycast image.
+    int2 u_raycast = hom2cart(project(K, Tgk1_k, vertex_measure));
+    if(u_raycast.x < 0 || u_raycast.y < 0 ||
+        u_raycast.x >= width || u_raycast.y >= height)
+    {
+        omega[thid] = 0.f;
+        return;
+    }
+    
+    int id_raycast = width*u_raycast.y + u_raycast.x;
+    float3 vertex_raycast = vertices_raycast[id_raycast];
+    
+    float3 v = transform3_affine(Tgk, vertex_measure);
+    float3 vdiff = vertex_raycast - v;
+    float vertex_distance = length(vdiff);
+    
+    // Prune invalid matches.
+    if(mask[thid] < 0.5f || vertex_distance < threshold_distance)
+    {
+        omega[thid] = 0.f;
+        return;
+    }
+    
+    float3 n = normals_raycast[thid];
+    float b = dot(vdiff, n);
+    current_Ab[0] = b*(v.z*n.y - v.y*n.z);
+    current_Ab[1] = b*(-v.z*n.x + v.x*n.z);
+    current_Ab[2] = b*(v.y*n.x - v.x*n.y);
+    current_Ab[3] = b*n.x;
+    current_Ab[4] = b*n.y;
+    current_Ab[5] = b*n.z;
+    
+    current_AA[0] = (v.z*n.y - v.y*n.z)*(v.z*n.y - v.y*n.z);
+    current_AA[1] = (v.z*n.y - v.y*n.z)*(-v.z*n.x + v.x*n.z);
+    current_AA[2] = (v.z*n.y - v.y*n.z)*(v.y*n.x - v.x*n.y);
+    current_AA[3] = (v.z*n.y - v.y*n.z)*n.x;
+    current_AA[4] = (v.z*n.y - v.y*n.z)*n.y;
+    current_AA[5] = (v.z*n.y - v.y*n.z)*n.z;
+    
+    current_AA[6]  = (-v.z*n.x + v.x*n.z)*(-v.z*n.x + v.x*n.z);
+    current_AA[7]  = (-v.z*n.x + v.x*n.z)*(v.y*n.x - v.x*n.y);
+    current_AA[8]  = (-v.z*n.x + v.x*n.z)*n.x;
+    current_AA[9]  = (-v.z*n.x + v.x*n.z)*n.y;
+    current_AA[10] = (-v.z*n.x + v.x*n.z)*n.z;
+    
+    current_AA[11] = (v.y*n.x - v.x*n.y)*(v.y*n.x - v.x*n.y);
+    current_AA[12] = (v.y*n.x - v.x*n.y)*n.x;
+    current_AA[13] = (v.y*n.x - v.x*n.y)*n.y;
+    current_AA[14] = (v.y*n.x - v.x*n.y)*n.z;
+    
+    current_AA[15] = n.x*n.x;
+    current_AA[16] = n.x*n.y;
+    current_AA[17] = n.x*n.z;
+    
+    current_AA[18] = n.y*n.y;
+    current_AA[19] = n.y*n.z;
+    
+    current_AA[20] = n.z*n.z;
+    omega[thid] = 1;
+}
+
 """
 
 class FreenectFusion(object):
@@ -298,6 +394,7 @@ class FreenectFusion(object):
         self.update_reconstruction = self.module.get_function("update_reconstruction")
         self.compute_depth = self.module.get_function("compute_depth")
         self.compute_smooth_depth = self.module.get_function("compute_smooth_depth")
+        self.compute_tracking_matrices = self.module.get_function("compute_tracking_matrices")
         self.measure = self.module.get_function("measure")
         self.raycast = self.module.get_function("raycast")
         
@@ -324,7 +421,7 @@ class FreenectFusion(object):
         self.T_gk_gpu = gpuarray.to_gpu(self.T_gk[:3])
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32) - 1000
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
-        self.mask_gpu = gpuarray.zeros((480,640), dtype=np.float32)
+        self.mask_gpu = gpuarray.zeros(480*640, dtype=np.float32)
         self.smooth_depth_gpu = gpuarray.zeros((480,640), dtype=np.float32)
         
         for buffer_type in ['measure', 'raycast']:
@@ -334,6 +431,11 @@ class FreenectFusion(object):
                 gl.glBufferData(gl.GL_ARRAY_BUFFER, 640*480*12, None, gl.GL_DYNAMIC_COPY)
             buffers = map(lambda x: cudagl.RegisteredBuffer(int(x)), buffers)
             self.buffers[buffer_type] = buffers
+        
+        # Tracking data.
+        self.AA_gpu = gpuarray.zeros((640*480, 21), dtype=np.float32)
+        self.Ab_gpu = gpuarray.zeros((640*480, 6), dtype=np.float32)
+        self.omega_gpu = gpuarray.zeros(640*480, dtype=np.float32)
         
         print drv.mem_get_info()
         
@@ -402,22 +504,24 @@ class FreenectFusion(object):
         #                     block=(16,16,1), grid=(gridx, gridy))
         #self.smooth_depth_texture.set_address_2d(depth_gpu.gpudata, descr, pitch)
         
-        # Measure
+        # Buffer mapping.
         normals_pitch = 640*12
-        mask_pitch = self.mask_gpu.strides[0]
-        vertex_map, normal_map = map(methodcaller("map"), self.buffers["measure"])
-        vertices = np.intp(vertex_map.device_ptr_and_size()[0])
-        normals = np.intp(normal_map.device_ptr_and_size()[0])
-        self.measure(vertices, normals, self.mask_gpu, np.int32(width), np.int32(height),
-                                np.intp(normals_pitch), np.intp(mask_pitch),
+        vertex_measure_map, normal_measure_map = map(methodcaller("map"), self.buffers["measure"])
+        vertices_measure = np.intp(vertex_measure_map.device_ptr_and_size()[0])
+        normals_measure = np.intp(normal_measure_map.device_ptr_and_size()[0])
+        vertex_raycast_map, normal_raycast_map = map(methodcaller("map"), self.buffers["raycast"])
+        vertices_raycast = np.intp(vertex_raycast_map.device_ptr_and_size()[0])
+        normals_raycast = np.intp(normal_raycast_map.device_ptr_and_size()[0])
+        
+        # Measure
+        self.measure(vertices_measure, normals_measure, self.mask_gpu, np.int32(width), np.int32(height),
+                                np.intp(normals_pitch),
                                 block=(16,16,1), grid=(gridx, gridy))
-        vertex_map.unmap()
-        normal_map.unmap()
         
         # Update the reconstruction.
         grid2 = int((self.side - 1) // 8 + 1)
         for i in xrange(0, self.side, 8):
-            self.update_reconstruction(self.F_gpu, self.W_gpu, normals, np.intp(normals_pitch),
+            self.update_reconstruction(self.F_gpu, self.W_gpu, normals_measure, np.intp(normals_pitch),
                                 np.int32(self.side), np.float32(self.units_per_voxel),
                                 np.float32(self.mu), np.int32(i),
                                 self.T_gk_gpu,
@@ -427,16 +531,31 @@ class FreenectFusion(object):
         self.F_gpu_to_array_copy()
         
         # Raycast.
-        vertex_map, normal_map = map(methodcaller("map"), self.buffers["raycast"])
-        vertices = np.intp(vertex_map.device_ptr_and_size()[0])
-        normals = np.intp(normal_map.device_ptr_and_size()[0])
-        self.raycast(vertices, normals, np.int32(width), np.int32(height),
+        self.raycast(vertices_raycast, normals_raycast, np.int32(width), np.int32(height),
                                 np.intp(normals_pitch),
                                 np.int32(self.side), np.float32(self.units_per_voxel),
                                 np.float32(self.mu), self.T_gk_gpu,
                                 block=(16,16,1), grid=(gridx,gridy))
-        vertex_map.unmap()
-        normal_map.unmap()
+        
+        # Tracking.
+        # __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
+        #                         float3* vertices_measure, float3* normals_measure,
+        #                         float3* vertices_raycast, float3* normals_raycast,
+        #                         int width, int height, size_t A_pitch,
+        #                         float* mask, float* Tgk, float* Tgk1_k,
+        #                         float threshold_distance)
+        self.compute_tracking_matrices(self.AA_gpu, self.Ab_gpu, self.omega_gpu,
+                                vertices_measure, normals_measure,
+                                vertices_raycast, normals_raycast,
+                                np.int32(width), np.int32(height),
+                                np.intp(self.AA_gpu.strides[0]), np.intp(self.Ab_gpu.strides[0]),
+                                self.mask_gpu, self.T_gk_gpu, self.T_gk_gpu, np.float32(20.0),
+                                block=(16,16,1), grid=(gridx,gridy))
+        
+        vertex_raycast_map.unmap()
+        normal_raycast_map.unmap()
+        vertex_measure_map.unmap()
+        normal_measure_map.unmap()
     
 
 class DenseDemo(DemoBase):
