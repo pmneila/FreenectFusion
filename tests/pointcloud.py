@@ -41,7 +41,7 @@ class PointCloudDemo(DemoBase):
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
         
-        freenect.sync_set_led(2)
+        #freenect.sync_set_led(2)
     
     def display(self):
         gl.glEnable(gl.GL_TEXTURE_2D)
@@ -111,7 +111,7 @@ class PointCloudDemo(DemoBase):
     def keyboard_press_event(self, key, x, y):
         
         if key == chr(27):
-            freenect.sync_set_led(1)
+            #freenect.sync_set_led(1)
             freenect.sync_stop()
         elif key == ' ':
             print "Toggled the RGB/IR image."

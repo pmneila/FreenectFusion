@@ -1,5 +1,6 @@
 
 from operator import methodcaller
+from itertools import product
 
 from demobase import DemoBase
 
@@ -20,6 +21,8 @@ import pycuda.gpuarray as gpuarray
 
 import kinect_calib as kc
 
+import cudareduce
+
 cuda_source = """
 
 texture<float, 2, cudaReadModeElementType> depth_texture;
@@ -28,11 +31,6 @@ texture<float, 3, cudaReadModeElementType> F_texture;
 
 __device__ __constant__ float K[9];
 __device__ __constant__ float invK[9];
-
-// Minimum distance for the reconstruction.
-__device__ __constant__ float mindistance = 500.f;
-// Maximum distance for the reconstruction.
-__device__ __constant__ float maxdistance = 1581.14f;
 
 inline __device__ float length2(float2 v)
 {
@@ -198,7 +196,7 @@ __global__ void measure(float3* vertices, float3* normals, float* mask,
     float3 n = normalize(cross(v - u, w - u));
     *current_vertex = u;
     *current_normal = n;
-    mask[thid] = depth < 0.01f;
+    mask[thid] = depth > 0.01f;
 }
 
 __global__ void update_reconstruction(float* F, float* W, float3* normals,
@@ -243,7 +241,8 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
 
 __global__ void raycast(float3* vertices, float3* normals,
                         int width, int height, size_t pitch,
-                        int side, float units_per_voxel, float mu, float* Tgk)
+                        int side, float units_per_voxel, float mu, float* Tgk,
+                        float mindistance, float maxdistance)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -318,6 +317,7 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     
     // Get the corresponding pixel in the raycast image.
     int2 u_raycast = hom2cart(project(K, Tgk1_k, vertex_measure));
+    
     if(u_raycast.x < 0 || u_raycast.y < 0 ||
         u_raycast.x >= width || u_raycast.y >= height)
     {
@@ -333,11 +333,13 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     float vertex_distance = length(vdiff);
     
     // Prune invalid matches.
-    if(mask[thid] < 0.5f || vertex_distance < threshold_distance)
+    if(mask[thid] < 0.5f || vertex_distance > threshold_distance)
     {
         omega[thid] = 0.f;
         return;
     }
+    
+    normals_measure[thid] = make_float3(1,1,1);
     
     float3 n = normals_raycast[thid];
     float b = dot(vdiff, n);
@@ -374,10 +376,27 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     current_AA[19] = n.y*n.z;
     
     current_AA[20] = n.z*n.z;
-    omega[thid] = 1;
+    omega[thid] = 1.f;
 }
-
 """
+
+def distance_to_bbox(bbox, point):
+    p1, p2 = bbox
+    size = np.abs(p1 - p2)/2.0
+    center = (p1 + p2)/2.0
+    point = point - center
+    point_bbox = np.copy(point)
+    out_upper = point_bbox > size
+    point_bbox[out_upper] = size[out_upper]
+    out_lower = point_bbox < -size
+    point_bbox[out_lower] = -size[out_lower]
+    return np.linalg.norm(point_bbox - point)
+
+def distance_farthest_to_bbox(bbox, point):
+    bbox = np.asarray(bbox)
+    corners = np.asarray(map(lambda x: bbox[x,[0,1,2]], product(*[[0,1]]*3)))
+    distances = np.sqrt(((corners - point)**2).sum(1))
+    return np.max(distances)
 
 class FreenectFusion(object):
     
@@ -419,6 +438,8 @@ class FreenectFusion(object):
         self.buffers = {}
         self.T_gk = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,-1000],[0,0,0,1]], dtype=np.float32)
         self.T_gk_gpu = gpuarray.to_gpu(self.T_gk[:3])
+        self.Tgk1_k_gpu = gpuarray.to_gpu(np.eye(4, dtype=np.float32)[:3])
+        
         self.F_gpu = gpuarray.zeros((side,)*3, dtype=np.float32) - 1000
         self.W_gpu = gpuarray.zeros((side,)*3, dtype=np.float32)
         self.mask_gpu = gpuarray.zeros(480*640, dtype=np.float32)
@@ -436,6 +457,10 @@ class FreenectFusion(object):
         self.AA_gpu = gpuarray.zeros((640*480, 21), dtype=np.float32)
         self.Ab_gpu = gpuarray.zeros((640*480, 6), dtype=np.float32)
         self.omega_gpu = gpuarray.zeros(640*480, dtype=np.float32)
+        self.AA = np.empty(21, dtype=np.float32)
+        self.Ab = np.empty(6, dtype=np.float32)
+        
+        self.active_tracking = False
         
         print drv.mem_get_info()
         
@@ -531,10 +556,15 @@ class FreenectFusion(object):
         self.F_gpu_to_array_copy()
         
         # Raycast.
+        bbox = self.get_bounding_box()
+        point = self.T_gk[:3,3]
+        mindistance = distance_to_bbox(bbox, point)
+        maxdistance = distance_farthest_to_bbox(bbox, point)
         self.raycast(vertices_raycast, normals_raycast, np.int32(width), np.int32(height),
                                 np.intp(normals_pitch),
                                 np.int32(self.side), np.float32(self.units_per_voxel),
                                 np.float32(self.mu), self.T_gk_gpu,
+                                np.float32(mindistance), np.float32(maxdistance),
                                 block=(16,16,1), grid=(gridx,gridy))
         
         # Tracking.
@@ -544,13 +574,39 @@ class FreenectFusion(object):
         #                         int width, int height, size_t A_pitch,
         #                         float* mask, float* Tgk, float* Tgk1_k,
         #                         float threshold_distance)
-        self.compute_tracking_matrices(self.AA_gpu, self.Ab_gpu, self.omega_gpu,
-                                vertices_measure, normals_measure,
-                                vertices_raycast, normals_raycast,
-                                np.int32(width), np.int32(height),
-                                np.intp(self.AA_gpu.strides[0]), np.intp(self.Ab_gpu.strides[0]),
-                                self.mask_gpu, self.T_gk_gpu, self.T_gk_gpu, np.float32(20.0),
-                                block=(16,16,1), grid=(gridx,gridy))
+        if self.active_tracking:
+            self.AA_gpu.fill(0)
+            self.Ab_gpu.fill(0)
+            self.compute_tracking_matrices(self.AA_gpu, self.Ab_gpu, self.omega_gpu,
+                                    vertices_measure, normals_measure,
+                                    vertices_raycast, normals_raycast,
+                                    np.int32(width), np.int32(height),
+                                    np.intp(self.AA_gpu.strides[0]), np.intp(self.Ab_gpu.strides[0]),
+                                    self.mask_gpu, self.T_gk_gpu, self.Tgk1_k_gpu, np.float32(20.0),
+                                    block=(16,16,1), grid=(gridx,gridy))
+            
+            cudareduce.add_vectors(self.AA_gpu, 640*480, 21)
+            cudareduce.add_vectors(self.Ab_gpu, 640*480, 6)
+            drv.memcpy_dtoh(self.AA, self.AA_gpu.gpudata)
+            drv.memcpy_dtoh(self.Ab, self.Ab_gpu.gpudata)
+            
+            # Solve the system.
+            AA = np.zeros((6,6))
+            AA[np.triu_indices(6)] = self.AA
+            AA.T[np.triu_indices(6)] = self.AA
+            try:
+                x = np.linalg.solve(AA, self.Ab)
+                Tinc = np.array([[1, x[2], -x[1], x[3]],
+                                [-x[2], 1, x[0], x[4]],
+                                [x[1], -x[0], 1, x[5]],
+                                [0, 0, 0, 1]])
+                U,D,V = np.linalg.svd(Tinc[:3,:3])
+                Tinc[:3,:3] = np.dot(U, V)
+            except np.linalg.LinAlgError:
+                Tinc = np.eye(4)
+            
+            self.T_gk = np.float32(np.dot(Tinc, self.T_gk))
+            self.T_gk_gpu = gpuarray.to_gpu(self.T_gk[:3])
         
         vertex_raycast_map.unmap()
         normal_raycast_map.unmap()
@@ -623,8 +679,12 @@ class DenseDemo(DemoBase):
             gl.glDrawArrays(gl.GL_POINTS, 0, 640*480)
         
         # Draw axes indicator.
+        gl.glPushMatrix()
+        gl.glMultMatrixf(self.ffusion.T_gk.T)
         gl.glPointSize(5)
         gl.glBegin(gl.GL_POINTS)
+        gl.glColor3d(1, 1, 1)
+        gl.glVertex3d(0, 0, 0)
         gl.glColor3d(1, 0, 0)
         gl.glVertex3d(100.0, 0, 0)
         gl.glColor3d(0, 1, 0)
@@ -632,6 +692,7 @@ class DenseDemo(DemoBase):
         gl.glColor3d(0, 0, 1)
         gl.glVertex3d(0, 0, 100.0)
         gl.glEnd()
+        gl.glPopMatrix()
         
         # Draw bounding box.
         self.draw_bounding_box()
@@ -668,12 +729,15 @@ class DenseDemo(DemoBase):
         if key == chr(27):
             #freenect.sync_set_led(1)
             freenect.sync_stop()
+            #np.savez("data", vertices=self.vertices_measure.get())
             #np.save("F", self.ffusion.F_gpu.get())
             #np.save("W", self.ffusion.W_gpu.get())
         if key == 'm':
             self.draw_flags['measure'] ^= True
         if key == 'r':
             self.draw_flags['raycast'] ^= True
+        if key == 't':
+            self.ffusion.active_tracking ^= True
         
         super(DenseDemo, self).keyboard_press_event(key, x, y)
     
