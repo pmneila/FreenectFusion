@@ -8,7 +8,7 @@ private:
     double mCenter[3];
     double mRadius;
     double mLongitude, mLatitude;
-    mutable double mPosition[2];
+    mutable double mPosition[3];
     mutable double mVector[3];
     
 public:

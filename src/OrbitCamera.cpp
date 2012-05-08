@@ -18,7 +18,7 @@ OrbitCamera::OrbitCamera()
     mLatitude(0.0)
 {
     std::fill(mCenter, mCenter+3, 0.0);
-    std::fill(mVector, mVector+3, 0.0);
+    getVector();
 }
 
 OrbitCamera::~OrbitCamera() {}
@@ -64,9 +64,10 @@ void OrbitCamera::zoom(double dy)
 
 const double* OrbitCamera::getPosition() const
 {
-    getVector();
+    const double* vec = getVector();
     // position = center + vector.
-    std::transform(mCenter, mCenter+3, mVector, mPosition, std::plus<double>());
+    std::transform(mCenter, mCenter+3, vec, mPosition, std::plus<double>());
+    return mPosition;
 }
 
 const double* OrbitCamera::getVector() const
@@ -81,7 +82,8 @@ const double* OrbitCamera::getVector() const
 void OrbitCamera::getGluLookAtParameters(double* params) const
 {
     static const double up[3] = {0.0, 1.0, 0.0};
-    std::copy(mPosition, mPosition+3, params);
+    const double* pos = getPosition();
+    std::copy(pos, pos+3, params);
     std::copy(mCenter, mCenter+3, params+3);
     std::copy(up, up+3, params+6);
 }
