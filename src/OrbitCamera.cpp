@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <functional>
 #include <cmath>
 
 static void cross(double* res, const double* a, const double* b)
