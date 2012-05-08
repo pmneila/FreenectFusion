@@ -21,11 +21,15 @@ private:
     int mWidth, mHeight;
     bool mKeyState[256];
     int mMousePosition[2];
+    unsigned long mFramesSinceTick;
+    int mTick;
+    double mFPS;
     
 public:
     DemoBase(int width, int height);
     virtual ~DemoBase();
     virtual void run(int* argcp, char** argv);
+    inline double getFPS() const {return mFPS;}
     
     static DemoBase* instance;
     

@@ -49,7 +49,8 @@ inline void DemoBase::mouse_moved_event(int x, int y)
 }
 
 DemoBase::DemoBase(int width, int height)
-    : mCameraState(NONE), mWindow(0), mWidth(width), mHeight(height)
+    : mCameraState(NONE), mWindow(0), mWidth(width), mHeight(height),
+    mFramesSinceTick(0), mTick(-1), mFPS(0.0)
 {
     if(instance != 0)
         throw std::runtime_error("There is already an instance of DemoBase.");
@@ -119,7 +120,25 @@ void DemoBase::displayBase()
               params[3], params[4], params[5],
               params[6], params[7], params[8]);
     display();
-    glutSwapBuffers();      
+    glutSwapBuffers();
+    
+    // FPS count.
+    int elapsedTime = glutGet(GLUT_ELAPSED_TIME);
+    if(mTick < 0)
+    {
+        mTick = elapsedTime;
+        mFramesSinceTick = 0;
+    }
+    
+    int diffTime = elapsedTime - mTick;
+    if(diffTime > 1000)
+    {
+        mFPS = 1000.0 * mFramesSinceTick / static_cast<double>(diffTime);
+        mTick = elapsedTime;
+        mFramesSinceTick = 0;
+    }
+    
+    ++mFramesSinceTick;
 }
 
 void DemoBase::keyboardPressEvent(unsigned char key, int x, int y)
