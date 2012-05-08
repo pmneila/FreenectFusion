@@ -5,10 +5,11 @@
 class OrbitCamera
 {
 private:
-    double center[3];
-    double radius;
-    double longitude, latitude;
-    mutable double position[2];
+    double mCenter[3];
+    double mRadius;
+    double mLongitude, mLatitude;
+    mutable double mPosition[2];
+    mutable double mVector[3];
     
 public:
     

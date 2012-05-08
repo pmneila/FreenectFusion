@@ -1,5 +1,5 @@
 
-set(ffusion_SOURCES main.cpp OrbitCamera.cpp DemoBase.cpp)
+set(ffusion_SOURCES main.cpp OrbitCamera.cpp DemoBase.cpp FreenectFusion.cpp)
 
 include_directories(${OPENGL_INCLUDE_DIR} ${GLUT_INCLUDE_DIR} ${Boost_INCLUDE_DIR})
 add_executable(ffusion ${ffusion_SOURCES})
