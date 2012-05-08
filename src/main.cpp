@@ -1,22 +1,67 @@
 
 #include "DemoBase.h"
 
+#if defined(__APPLE__) || defined(MACOSX)
+#include <OpenGL/gl.h>
+#include <GLUT/glut.h>
+#else
+#include <GL/gl.h>
+#include <GL/glut.h>
+#endif
+
+#include <libfreenect_sync.h>
+
 class Viewer : public DemoBase
 {
 public:
     Viewer(int width, int height)
         : DemoBase(width, height)
     {}
+
+private:
+    GLuint mTexture;
     
 protected:
     void display()
     {
+        void* image = 0;
+        void* depth = 0;
+        uint32_t timestamp;
+        freenect_sync_get_video(&image, &timestamp, 0, FREENECT_VIDEO_RGB);
+        freenect_sync_get_depth(&depth, &timestamp, 0, FREENECT_DEPTH_11BIT);
         
+        glBindTexture(GL_TEXTURE_2D, mTexture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 640, 480, GL_RGB, GL_UNSIGNED_BYTE, image);
+        glBegin(GL_QUADS);
+            glTexCoord2d(1.0, 0.0);
+            glVertex3d(320.0, 240.0, 0.0);
+            glTexCoord2d(1.0, 1.0);
+            glVertex3d(320.0, -240.0, 0.0);
+            glTexCoord2d(0.0, 1.0);
+            glVertex3d(-320.0, -240.0, 0.0);
+            glTexCoord2d(0.0, 0.0);
+            glVertex3d(-320.0, 240.0, 0.0);
+        glEnd();
     }
     
     void initGl(int width, int height)
     {
         DemoBase::initGl(width, height);
+        
+        glEnable(GL_TEXTURE_2D);
+        glGenTextures(1, &mTexture);
+        glBindTexture(GL_TEXTURE_2D, mTexture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, 3, 640, 480, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+    }
+    
+    void keyboardPressEvent(unsigned char key, int x, int y)
+    {
+        if(key == 27)
+            freenect_sync_stop();
+        
+        DemoBase::keyboardPressEvent(key, x, y);
     }
 };
 
