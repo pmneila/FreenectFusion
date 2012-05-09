@@ -1,5 +1,6 @@
 
 #include "DemoBase.h"
+#include "FreenectFusion.h"
 
 #if defined(__APPLE__) || defined(MACOSX)
 #include <OpenGL/gl.h>
@@ -13,13 +14,15 @@
 
 class Viewer : public DemoBase
 {
-public:
-    Viewer(int width, int height)
-        : DemoBase(width, height)
-    {}
-
 private:
     GLuint mTexture;
+    FreenectFusion mFfusion;
+    
+public:
+    Viewer(int width, int height)
+        : DemoBase(width, height),
+        mFfusion(640, 480, 0, 0)
+    {}
     
 protected:
     void display()
@@ -30,8 +33,11 @@ protected:
         freenect_sync_get_video(&image, &timestamp, 0, FREENECT_VIDEO_RGB);
         freenect_sync_get_depth(&depth, &timestamp, 0, FREENECT_DEPTH_11BIT);
         
+        mFfusion.update(depth);
+        const float* d = mFfusion.getMeasurement()->getDepthHost();
+        
         glBindTexture(GL_TEXTURE_2D, mTexture);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 640, 480, GL_RGB, GL_UNSIGNED_BYTE, image);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 640, 480, GL_LUMINANCE, GL_FLOAT, d);
         glBegin(GL_QUADS);
             glTexCoord2d(1.0, 0.0);
             glVertex3d(320.0, 240.0, 0.0);
@@ -53,7 +59,7 @@ protected:
         glBindTexture(GL_TEXTURE_2D, mTexture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, 3, 640, 480, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, 1, 640, 480, 0, GL_LUMINANCE, GL_FLOAT, 0);
     }
     
     void keyboardPressEvent(unsigned char key, int x, int y)

@@ -1,4 +1,8 @@
 
+#include "FreenectFusion.h"
+
+#include <thrust/transform.h>
+
 texture<float, 2, cudaReadModeElementType> depth_texture;
 texture<float, 2, cudaReadModeElementType> smooth_depth_texture;
 texture<float, 3, cudaReadModeElementType> F_texture;
@@ -94,7 +98,7 @@ __device__ float3 worldToGrid(float3 p, int side, float units_per_voxel)
                         p.z/units_per_voxel + side/2);
 }
 
-__global__ void compute_depth(float* depth, int width, int height, size_t pitch)
+__global__ void compute_depth_2(float* depth, int width, int height, size_t pitch)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -351,4 +355,27 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     
     current_AA[20] = n.z*n.z;
     omega[thid] = 1.f;
+}
+
+/// Transform Kinect depth measurements to milimeters.
+struct transform_depth
+{
+    __host__ __device__
+    float operator()(uint16_t a)
+    {
+        if(a == 2047)
+            return 0.f;
+        
+        return 1000.f / (a * -0.0030711016f + 3.3309495161f);
+    }
+};
+
+void Measurement::setDepth(uint16_t* depth)
+{
+    cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumElements,
+            cudaMemcpyHostToDevice);
+    thrust::transform(thrust::device_ptr<uint16_t>(mRawDepthGpu),
+                      thrust::device_ptr<uint16_t>(mRawDepthGpu + mNumElements),
+                      thrust::device_ptr<float>(mDepthGpu),
+                      transform_depth());
 }
