@@ -55,11 +55,11 @@ def calibrate(image_corners, chessboard_points, image_size):
     tvecs = np.zeros((len(valid_corners),3))
     
     # Calibrate.
-    cv.CalibrateCamera2(np.array(object_points, dtype=np.float_),
-                        np.array(image_points, dtype=np.float_),
-                        point_counts,
-                        image_size, intrinsic, dist_coeffs,
-                        rvecs, tvecs)
+    cv.CalibrateCamera2(cv.fromarray(np.array(object_points, dtype=np.float_)),
+                        cv.fromarray(np.array(image_points, dtype=np.float_)),
+                        cv.fromarray(np.int32(point_counts)),
+                        image_size, cv.fromarray(intrinsic), cv.fromarray(dist_coeffs),
+                        cv.fromarray(rvecs), cv.fromarray(tvecs))
     
     # Build the transformation matrices.
     rvecs = iter(rvecs)
@@ -88,7 +88,7 @@ def main(path, fileformat, ir_prefix, rgb_prefix,
         
         images = [imread(fname) for fname in filenames]
         print "Extracting corners..."
-        corners = [cv.FindChessboardCorners(i, (8,6)) for i in images]
+        corners = [cv.FindChessboardCorners(cv.fromarray(i), (8,6)) for i in images]
         
         print "Calibrating..."
         intrinsic, extrinsic = calibrate(corners, cb_points, images[0].shape[:2])
