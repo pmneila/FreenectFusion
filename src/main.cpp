@@ -2,13 +2,7 @@
 #include "DemoBase.h"
 #include "FreenectFusion.h"
 
-#if defined(__APPLE__) || defined(MACOSX)
-#include <OpenGL/gl.h>
-#include <GLUT/glut.h>
-#else
-#include <GL/gl.h>
-#include <GL/glut.h>
-#endif
+#include "glheaders.h"
 
 #include <libfreenect_sync.h>
 
@@ -18,6 +12,7 @@
 #include <stdexcept>
 #include <cerrno>
 #include <iterator>
+#include <cstring>
 
 void read_calib_file(double* Krgb, double* Kdepth, double* T, const std::string& filename)
 {

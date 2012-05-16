@@ -1,6 +1,8 @@
 
 #include "FreenectFusion.h"
 
+#include "glheaders.h"
+
 #include <cuda_runtime_api.h>
 #include <cuda_gl_interop.h>
 
