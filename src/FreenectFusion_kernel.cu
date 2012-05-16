@@ -372,10 +372,16 @@ struct transform_depth
 
 void Measurement::setDepth(uint16_t* depth)
 {
-    cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumElements,
+    size_t offset;
+    
+    cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumVertices,
             cudaMemcpyHostToDevice);
     thrust::transform(thrust::device_ptr<uint16_t>(mRawDepthGpu),
-                      thrust::device_ptr<uint16_t>(mRawDepthGpu + mNumElements),
+                      thrust::device_ptr<uint16_t>(mRawDepthGpu + mNumVertices),
                       thrust::device_ptr<float>(mDepthGpu),
                       transform_depth());
+    
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
+    cudaBindTexture2D(&offset, &depth_texture, mDepthGpu, &channelDesc,
+                    mWidth, mHeight, mWidth*sizeof(float));
 }
