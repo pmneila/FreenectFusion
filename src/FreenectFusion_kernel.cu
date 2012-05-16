@@ -1,6 +1,7 @@
 
 #include "FreenectFusion.h"
 
+#include <cuda_gl_interop.h>
 #include <thrust/transform.h>
 
 texture<float, 2, cudaReadModeElementType> depth_texture;
@@ -384,4 +385,16 @@ void Measurement::setDepth(uint16_t* depth)
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
     cudaBindTexture2D(&offset, &depth_texture, mDepthGpu, &channelDesc,
                     mWidth, mHeight, mWidth*sizeof(float));
+    
+    depth_texture.filterMode = cudaFilterModePoint;
+    depth_texture.addressMode[0] = cudaAddressModeClamp;
+    depth_texture.addressMode[1] = cudaAddressModeClamp;
+    
+    float* vertices;
+    float* normals;
+    cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
+    cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
+    // ASDF
+    cudaGLUnmapBufferObject(mVertexBuffer);
+    cudaGLUnmapBufferObject(mNormalBuffer);
 }
