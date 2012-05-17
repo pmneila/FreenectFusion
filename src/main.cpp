@@ -94,25 +94,33 @@ protected:
         mFfusion->update(depth);
         const float* d = mFfusion->getMeasurement()->getDepthHost();
         
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, mTexture);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 640, 480, GL_LUMINANCE, GL_FLOAT, d);
-        glBegin(GL_QUADS);
-            glTexCoord2d(1.0, 0.0);
-            glVertex3d(320.0, 240.0, 0.0);
-            glTexCoord2d(1.0, 1.0);
-            glVertex3d(320.0, -240.0, 0.0);
-            glTexCoord2d(0.0, 1.0);
-            glVertex3d(-320.0, -240.0, 0.0);
-            glTexCoord2d(0.0, 0.0);
-            glVertex3d(-320.0, 240.0, 0.0);
-        glEnd();
+        // glEnable(GL_TEXTURE_2D);
+        // glBindTexture(GL_TEXTURE_2D, mTexture);
+        // glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 640, 480, GL_LUMINANCE, GL_FLOAT, d);
+        // glBegin(GL_QUADS);
+        //     glTexCoord2d(1.0, 0.0);
+        //     glVertex3d(320.0, 240.0, 0.0);
+        //     glTexCoord2d(1.0, 1.0);
+        //     glVertex3d(320.0, -240.0, 0.0);
+        //     glTexCoord2d(0.0, 1.0);
+        //     glVertex3d(-320.0, -240.0, 0.0);
+        //     glTexCoord2d(0.0, 0.0);
+        //     glVertex3d(-320.0, 240.0, 0.0);
+        // glEnd();
         
         glDisable(GL_TEXTURE_2D);
+        glPointSize(1);
+        // glBegin(GL_QUADS);
+        //     glColor3d(1.0, 0, 0);
+        //     glVertex3d(400.0, 400.0, 400.0);
+        // glEnd();
+        
         glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
         glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLVertexBuffer());
         glVertexPointer(3, GL_FLOAT, 12, 0);
-        glPointSize(1);
+        glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLNormalBuffer());
+        glColorPointer(3, GL_FLOAT, 12, 0);
         glDrawArrays(GL_POINTS, 0, 640*480);
     }
     

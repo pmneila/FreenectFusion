@@ -3,13 +3,11 @@
 
 #include <cuda_gl_interop.h>
 #include <thrust/transform.h>
+#include <thrust/fill.h>
 
 texture<float, 2, cudaReadModeElementType> depth_texture;
 texture<float, 2, cudaReadModeElementType> smooth_depth_texture;
 texture<float, 3, cudaReadModeElementType> F_texture;
-
-__device__ __constant__ float K[9];
-__device__ __constant__ float invK[9];
 
 inline __device__ float length2(float2 v)
 {
@@ -41,7 +39,7 @@ inline __device__ float3 operator*(float s, float3 a)
     return make_float3(a.x * s, a.y * s, a.z * s);
 }
 
-__device__ float3 transform3(float* matrix, float3 v)
+__device__ float3 transform3(const float* matrix, float3 v)
 {
     float3 res;
     res.x = matrix[0]*v.x + matrix[1]*v.y + matrix[2]*v.z;
@@ -50,7 +48,7 @@ __device__ float3 transform3(float* matrix, float3 v)
     return res;
 }
 
-__device__ float3 transform3_affine(float* matrix, float3 v)
+__device__ float3 transform3_affine(const float* matrix, float3 v)
 {
     float3 res;
     res.x = matrix[0]*v.x + matrix[1]*v.y + matrix[2]*v.z + matrix[3];
@@ -59,7 +57,7 @@ __device__ float3 transform3_affine(float* matrix, float3 v)
     return res;
 }
 
-__device__ float3 transform3_affine_inverse(float* matrix, float3 v)
+__device__ float3 transform3_affine_inverse(const float* matrix, float3 v)
 {
     float3 res;
     float3 v2 = make_float3(v.x-matrix[3], v.y-matrix[7], v.z-matrix[11]);
@@ -151,7 +149,7 @@ __global__ void compute_smooth_depth(float* smooth_depth,
 /**
  * Generate vertices and normals from a depth stored in depth_texture.
  */
-__global__ void measure(float3* vertices, float3* normals, float* mask,
+__global__ void measure(float3* vertices, float3* normals, int* mask, const float* invK,
                         int width, int height, size_t pitch)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -178,9 +176,10 @@ __global__ void measure(float3* vertices, float3* normals, float* mask,
     mask[thid] = depth > 0.01f;
 }
 
-__global__ void update_reconstruction(float* F, float* W, float3* normals,
-                        size_t normals_pitch, int side, float units_per_voxel,
-                        float mu, int init_slice, float* Tgk)
+__global__ void update_reconstruction(float* F, float* W,
+                        int side, float units_per_voxel,
+                        float mu, int init_slice,
+                        const float* K, const float* invK, float* Tgk)
 {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
@@ -220,7 +219,8 @@ __global__ void update_reconstruction(float* F, float* W, float3* normals,
 
 __global__ void raycast(float3* vertices, float3* normals,
                         int width, int height, size_t pitch,
-                        int side, float units_per_voxel, float mu, float* Tgk,
+                        int side, float units_per_voxel, float mu,
+                        float* invK, float* Tgk,
                         float mindistance, float maxdistance)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -264,7 +264,7 @@ __global__ void raycast(float3* vertices, float3* normals,
     *current_vertex = make_float3(0.f, 0.f, 0.f);
 }
 
-__device__ float3 project(float* K, float* T, float3 point)
+__device__ float3 project(const float* K, const float* T, float3 point)
 {
     return transform3(K, transform3_affine(T, point));
 }
@@ -279,7 +279,8 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
                         float3* vertices_raycast, float3* normals_raycast,
                         int width, int height,
                         size_t AA_pitch, size_t Ab_pitch,
-                        float* mask, float* Tgk, float* Tgk1_k,
+                        float* mask,
+                        const float* K, const float* Tgk, const float* Tgk1_k,
                         float threshold_distance)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -373,8 +374,6 @@ struct transform_depth
 
 void Measurement::setDepth(uint16_t* depth)
 {
-    size_t offset;
-    
     cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumVertices,
             cudaMemcpyHostToDevice);
     thrust::transform(thrust::device_ptr<uint16_t>(mRawDepthGpu),
@@ -383,18 +382,37 @@ void Measurement::setDepth(uint16_t* depth)
                       transform_depth());
     
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
-    cudaBindTexture2D(&offset, &depth_texture, mDepthGpu, &channelDesc,
+    cudaBindTexture2D(0, &depth_texture, mDepthGpu, &channelDesc,
                     mWidth, mHeight, mWidth*sizeof(float));
     
+    depth_texture.normalized = false;
     depth_texture.filterMode = cudaFilterModePoint;
     depth_texture.addressMode[0] = cudaAddressModeClamp;
     depth_texture.addressMode[1] = cudaAddressModeClamp;
     
-    float* vertices;
-    float* normals;
+    float3* vertices;
+    float3* normals;
     cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
     cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
-    // ASDF
+    dim3 grid, block(16,16,1);
+    grid.x = (mWidth-1)/block.x + 1;
+    grid.y = (mHeight-1)/block.y + 1;
+    measure<<<grid,block>>>(vertices, normals, mMaskGpu, mKdepth->getInverseGpu(),
+                            mWidth, mHeight, mWidth*12);
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
+}
+
+void VolumeFusion::update(const float* depthGpu, const float* T)
+{
+    cudaMemcpy(mTgkGpu, T, 16*sizeof(float), cudaMemcpyHostToDevice);
+    
+    dim3 block(8,8,8);
+    dim3 grid;
+    grid.x = grid.y = (mSide-1)/8 + 1;
+    
+    for(int i=0; i<mSide; i+=8)
+        update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel,
+                                            200.f, i, mKdepth->getGpu(),
+                                            mKdepth->getInverseGpu(), mTgkGpu);
 }

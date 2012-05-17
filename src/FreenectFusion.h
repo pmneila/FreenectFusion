@@ -6,17 +6,22 @@
 
 class float2;
 
-class IntrinsicMatrix
+class MatrixGpu
 {
 private:
-    float mK[9];
+    int mSide;
+    int mSize;
+    float* mK;
     float* mKGpu;
-    float mKinv[9];
+    float* mKinv;
     float* mKinvGpu;
     
 public:
-    IntrinsicMatrix(const double* K);
-    ~IntrinsicMatrix();
+    static MatrixGpu* newIntrinsicMatrix(const double* K);
+    static MatrixGpu* newTransformMatrix(const double* T);
+    
+    MatrixGpu(int side, const double* K, const double* Kinv=0);
+    ~MatrixGpu();
     
     inline operator const float*() const {return mK;}
     
@@ -34,7 +39,7 @@ private:
     uint16_t* mRawDepthGpu;
     mutable float* mDepth;
     
-    IntrinsicMatrix mKdepth;
+    MatrixGpu* mKdepth;
     
     unsigned int mVertexBuffer;
     unsigned int mNormalBuffer;
@@ -54,11 +59,33 @@ public:
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
 };
 
+class VolumeFusion
+{
+private:
+    float* mFGpu;
+    float* mWGpu;
+    float* mTgkGpu;
+    
+    MatrixGpu* mKdepth;
+    
+    int mSide;
+    float mUnitsPerVoxel;
+    
+public:
+    VolumeFusion(int side, float unitsPerVoxel, const double* Kdepth);
+    ~VolumeFusion();
+    
+    void update(const float* depthGpu, const float* T);
+    void raycast(const float* T);
+};
+
 class FreenectFusion
 {
 private:
     int mWidth, mHeight;
     Measurement* mMeasurement;
+    VolumeFusion* mVolume;
+    float mLocation[16];
     
 public:
     FreenectFusion(int width, int height,
