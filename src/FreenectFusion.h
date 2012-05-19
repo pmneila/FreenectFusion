@@ -64,12 +64,15 @@ class VolumeFusion
 private:
     float* mFGpu;
     float* mWGpu;
-    float* mTgkGpu;
+    mutable float* mTgkGpu;
     
     MatrixGpu* mKdepth;
     
     int mSide;
     float mUnitsPerVoxel;
+    
+    float mBoundingBox[6];
+    void initBoundingBox();
     
 public:
     VolumeFusion(int side, float unitsPerVoxel, const double* Kdepth);
@@ -77,6 +80,10 @@ public:
     
     void update(const float* depthGpu, const float* T);
     void raycast(const float* T);
+    
+    inline const float* getBoundingBox() const {return mBoundingBox;}
+    float getMinimumDistanceTo(const float* point) const;
+    float getMaximumDistanceTo(const float* point) const;
 };
 
 class FreenectFusion

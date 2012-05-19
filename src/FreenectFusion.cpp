@@ -9,6 +9,9 @@
 #include <thrust/device_ptr.h>
 #include <thrust/transform.h>
 
+#include <cmath>
+#include <numeric>
+
 #define ISPOW2(x) !((x)&((x)-1))
 
 MatrixGpu::MatrixGpu(int side, const double* K, const double* Kinv)
@@ -106,6 +109,8 @@ VolumeFusion::VolumeFusion(int side, float unitsPerVoxel, const double* Kdepth)
     cudaMalloc((void**)&mWGpu, side*side*side*sizeof(float));
     
     cudaMalloc((void**)&mTgkGpu, 16*sizeof(float));
+    
+    initBoundingBox();
 }
 
 VolumeFusion::~VolumeFusion()
@@ -116,13 +121,45 @@ VolumeFusion::~VolumeFusion()
     cudaFree(mTgkGpu);
 }
 
+float VolumeFusion::getMinimumDistanceTo(const float* point) const
+{
+    static const float center[] = {0.f, 0.f, 0.f};
+    float point2[3];
+    float point_bbox[3];
+    float v[3];
+    int size = mSide / 2;
+    // point2 = point - center
+    std::transform(point, point+3, center, point2, std::minus<float>());
+    std::copy(point2, point2+3, point_bbox);
+    std::replace_if(point_bbox, point_bbox+3, std::bind2nd(std::less<float>(),-size), -size);
+    std::replace_if(point_bbox, point_bbox+3, std::bind2nd(std::greater<float>(),size), size);
+    std::transform(point_bbox, point_bbox+3, point2, v, std::minus<float>());
+    return std::sqrt(std::inner_product(v, v+3, v, 0));
+}
+
+float VolumeFusion::getMaximumDistanceTo(const float* point) const
+{
+    float corner[3];
+    float distance[8];
+    float v[3];
+    for(int i=0; i<8; ++i)
+    {
+        corner[0] = i&1 ? mBoundingBox[3] : -mBoundingBox[0];
+        corner[1] = i&2 ? mBoundingBox[4] : -mBoundingBox[1];
+        corner[2] = i&4 ? mBoundingBox[5] : -mBoundingBox[2];
+        std::transform(point, point+3, corner, v, std::minus<float>());
+        distance[i] = std::sqrt(std::inner_product(v, v+3, v, 0));
+    }
+    return *std::max_element(distance, distance+8);
+}
+
 FreenectFusion::FreenectFusion(int width, int height,
                         const double* Kdepth, const double* Krgb)
     : mWidth(width), mHeight(height)
 {
     static const float initLocation[16] = {1.f, 0.f, 0.f, 0.f,
                                            0.f, 1.f, 0.f, 0.f,
-                                           0.f, 0.f, 1.f, -100.f,
+                                           0.f, 0.f, 1.f, -1000.f,
                                            0.f, 0.f, 0.f, 1.f};
     
     mMeasurement = new Measurement(width, height, Kdepth);

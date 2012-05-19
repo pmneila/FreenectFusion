@@ -83,14 +83,14 @@ __device__ float gaussian(float t, float sigma)
     return exp(-t*t/(sigma*sigma));
 }
 
-__device__ float3 gridToWorld(float3 p, int side, float units_per_voxel)
+__host__ __device__ float3 gridToWorld(float3 p, int side, float units_per_voxel)
 {
     return make_float3((p.x - side/2) * units_per_voxel,
                         (p.y - side/2) * units_per_voxel,
                         (p.z - side/2) * units_per_voxel);
 }
 
-__device__ float3 worldToGrid(float3 p, int side, float units_per_voxel)
+__host__ __device__ float3 worldToGrid(float3 p, int side, float units_per_voxel)
 {
     return make_float3(p.x/units_per_voxel + side/2,
                         p.y/units_per_voxel + side/2,
@@ -401,6 +401,15 @@ void Measurement::setDepth(uint16_t* depth)
                             mWidth, mHeight, mWidth*12);
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
+}
+
+void VolumeFusion::initBoundingBox()
+{
+    float3 lower = gridToWorld(make_float3(0,0,0), mSide, mUnitsPerVoxel);
+    float3 upper = gridToWorld(make_float3(mSide,mSide,mSide), mSide, mUnitsPerVoxel);
+    mBoundingBox[0] = lower.x; mBoundingBox[1] = lower.y; mBoundingBox[2] = lower.z;
+    mBoundingBox[3] = upper.x; mBoundingBox[4] = upper.y; mBoundingBox[5] = upper.z;
+    std::copy(mBoundingBox, mBoundingBox+6, std::ostream_iterator<float>(std::cout, ", "));
 }
 
 void VolumeFusion::update(const float* depthGpu, const float* T)
