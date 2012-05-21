@@ -6,8 +6,7 @@
 #include <cuda_runtime_api.h>
 #include <cuda_gl_interop.h>
 
-#include <thrust/device_ptr.h>
-#include <thrust/transform.h>
+#include <stdexcept>
 
 #include <cmath>
 #include <numeric>
@@ -99,14 +98,22 @@ const float* Measurement::getDepthHost() const
     return mDepth;
 }
 
-VolumeFusion::VolumeFusion(int side, float unitsPerVoxel, const double* Kdepth)
+VolumeFusion::VolumeFusion(int side, float unitsPerVoxel)
     : mSide(side), mUnitsPerVoxel(unitsPerVoxel)
 {
     if(!ISPOW2(mSide))
         throw std::runtime_error("side must be power of 2");
-    mKdepth = MatrixGpu::newIntrinsicMatrix(Kdepth);
-    cudaMalloc((void**)&mFGpu, side*side*side*sizeof(float));
-    cudaMalloc((void**)&mWGpu, side*side*side*sizeof(float));
+    
+    unsigned int numElements = side*side*side;
+    cudaMalloc((void**)&mFGpu, numElements*sizeof(float));
+    cudaMalloc((void**)&mWGpu, numElements*sizeof(float));
+    
+    // Fill with zeros.
+    float* zero = new float[numElements];
+    std::fill(zero, zero+numElements, 0.f);
+    cudaMemcpy(mFGpu, zero, numElements*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(mWGpu, zero, numElements*sizeof(float), cudaMemcpyHostToDevice);
+    delete [] zero;
     
     cudaMalloc((void**)&mTgkGpu, 16*sizeof(float));
     
@@ -115,7 +122,6 @@ VolumeFusion::VolumeFusion(int side, float unitsPerVoxel, const double* Kdepth)
 
 VolumeFusion::~VolumeFusion()
 {
-    delete mKdepth;
     cudaFree(mFGpu);
     cudaFree(mWGpu);
     cudaFree(mTgkGpu);
@@ -153,6 +159,32 @@ float VolumeFusion::getMaximumDistanceTo(const float* point) const
     return *std::max_element(distance, distance+8);
 }
 
+VolumeMeasurement::VolumeMeasurement(int width, int height, const double* Kdepth)
+    : mWidth(width), mHeight(height), mNumVertices(mWidth*mHeight)
+{
+    mKdepth = MatrixGpu::newIntrinsicMatrix(Kdepth);
+    cudaMalloc((void**)&mTgkGpu, 16*sizeof(float));
+    
+    // Vertices and normals.
+    glGenBuffers(1, &mVertexBuffer);
+    glGenBuffers(1, &mNormalBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, mVertexBuffer);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
+    glBindBuffer(GL_ARRAY_BUFFER, mNormalBuffer);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
+    cudaGLRegisterBufferObject(mVertexBuffer);
+    cudaGLRegisterBufferObject(mNormalBuffer);
+}
+
+VolumeMeasurement::~VolumeMeasurement()
+{
+    delete mKdepth;
+    glDeleteBuffers(1, &mVertexBuffer);
+    glDeleteBuffers(1, &mNormalBuffer);
+    
+    cudaFree(mTgkGpu);
+}
+
 FreenectFusion::FreenectFusion(int width, int height,
                         const double* Kdepth, const double* Krgb)
     : mWidth(width), mHeight(height)
@@ -163,7 +195,8 @@ FreenectFusion::FreenectFusion(int width, int height,
                                            0.f, 0.f, 0.f, 1.f};
     
     mMeasurement = new Measurement(width, height, Kdepth);
-    mVolume = new VolumeFusion(256, 7.8125f, Kdepth);
+    mVolume = new VolumeFusion(256, 7.8125f);
+    mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     std::copy(initLocation, initLocation+16, mLocation);
 }
 
@@ -171,10 +204,12 @@ FreenectFusion::~FreenectFusion()
 {
     delete mMeasurement;
     delete mVolume;
+    delete mVolumeMeasurement;
 }
 
 void FreenectFusion::update(void* depth)
 {
     mMeasurement->setDepth((uint16_t*)depth);
-    mVolume->update(mMeasurement->getDepthGpu(), mLocation);
+    mVolume->update(*mMeasurement, mLocation);
+    mVolumeMeasurement->measure(*mVolume, mLocation);
 }

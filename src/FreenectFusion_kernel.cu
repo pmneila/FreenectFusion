@@ -220,7 +220,7 @@ __global__ void update_reconstruction(float* F, float* W,
 __global__ void raycast(float3* vertices, float3* normals,
                         int width, int height, size_t pitch,
                         int side, float units_per_voxel, float mu,
-                        float* invK, float* Tgk,
+                        const float* invK, const float* Tgk,
                         float mindistance, float maxdistance)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -412,7 +412,7 @@ void VolumeFusion::initBoundingBox()
     std::copy(mBoundingBox, mBoundingBox+6, std::ostream_iterator<float>(std::cout, ", "));
 }
 
-void VolumeFusion::update(const float* depthGpu, const float* T)
+void VolumeFusion::update(const Measurement& measurement, const float* T)
 {
     cudaMemcpy(mTgkGpu, T, 16*sizeof(float), cudaMemcpyHostToDevice);
     
@@ -420,8 +420,41 @@ void VolumeFusion::update(const float* depthGpu, const float* T)
     dim3 grid;
     grid.x = grid.y = (mSide-1)/8 + 1;
     
+    const float* kdepth = measurement.getKdepth()->getGpu();
+    const float* kdepthinv = measurement.getKdepth()->getInverseGpu();
+    
     for(int i=0; i<mSide; i+=8)
         update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel,
-                                            200.f, i, mKdepth->getGpu(),
-                                            mKdepth->getInverseGpu(), mTgkGpu);
+                                            200.f, i, kdepth,
+                                            kdepthinv, mTgkGpu);
+}
+
+void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
+{
+    // TODO: Copy F to texture.
+    cudaMemcpy(mTgkGpu, T, 16*sizeof(float), cudaMemcpyHostToDevice);
+    
+    float position[3];
+    position[0] = T[3]; position[1] = T[7]; position[2] = T[11];
+    float mindistance = volume.getMinimumDistanceTo(position);
+    float maxdistance = volume.getMaximumDistanceTo(position);
+    
+    float3* vertices;
+    float3* normals;
+    cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
+    cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
+    dim3 grid, block(16,16,1);
+    grid.x = (mWidth-1)/block.x + 1;
+    grid.y = (mHeight-1)/block.y + 1;
+    // __global__ void raycast(float3* vertices, float3* normals,
+    //                         int width, int height, size_t pitch,
+    //                         int side, float units_per_voxel, float mu,
+    //                         float* invK, float* Tgk,
+    //                         float mindistance, float maxdistance)
+    raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*12,
+                            volume.getSide(), volume.getUnitsPerVoxel(), 200.f,
+                            mKdepth->getInverseGpu(), mTgkGpu,
+                            mindistance, maxdistance);
+    cudaGLUnmapBufferObject(mVertexBuffer);
+    cudaGLUnmapBufferObject(mNormalBuffer);
 }

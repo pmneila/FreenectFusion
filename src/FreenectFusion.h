@@ -55,6 +55,8 @@ public:
     inline const float* getDepthGpu() const {return mDepthGpu;}
     const float* getDepthHost() const;
     
+    inline const MatrixGpu* getKdepth() const {return mKdepth;}
+    
     inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
 };
@@ -66,8 +68,6 @@ private:
     float* mWGpu;
     mutable float* mTgkGpu;
     
-    MatrixGpu* mKdepth;
-    
     int mSide;
     float mUnitsPerVoxel;
     
@@ -75,15 +75,32 @@ private:
     void initBoundingBox();
     
 public:
-    VolumeFusion(int side, float unitsPerVoxel, const double* Kdepth);
+    VolumeFusion(int side, float unitsPerVoxel);
     ~VolumeFusion();
     
-    void update(const float* depthGpu, const float* T);
-    void raycast(const float* T);
+    void update(const Measurement& measurement, const float* T);
     
     inline const float* getBoundingBox() const {return mBoundingBox;}
     float getMinimumDistanceTo(const float* point) const;
     float getMaximumDistanceTo(const float* point) const;
+    
+    inline int getSide() const {return mSide;}
+    inline float getUnitsPerVoxel() const {return mUnitsPerVoxel;}
+};
+
+class VolumeMeasurement
+{
+private:
+    int mWidth, mHeight, mNumVertices;
+    unsigned int mVertexBuffer, mNormalBuffer;
+    MatrixGpu* mKdepth;
+    mutable float* mTgkGpu;
+    
+public:
+    VolumeMeasurement(int width, int height, const double* Kdepth);
+    ~VolumeMeasurement();
+    
+    void measure(const VolumeFusion& volume, const float* T);
 };
 
 class FreenectFusion
@@ -92,6 +109,7 @@ private:
     int mWidth, mHeight;
     Measurement* mMeasurement;
     VolumeFusion* mVolume;
+    VolumeMeasurement* mVolumeMeasurement;
     float mLocation[16];
     
 public:
