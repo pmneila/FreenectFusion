@@ -7,6 +7,7 @@
 #include <cuda_gl_interop.h>
 
 #include <stdexcept>
+#include <algorithm>
 
 #include <cmath>
 #include <numeric>
