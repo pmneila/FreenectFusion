@@ -1,6 +1,8 @@
 
 #include "FreenectFusion.h"
 
+#include "cudautils.h"
+
 #include <cuda_gl_interop.h>
 #include <thrust/transform.h>
 #include <thrust/fill.h>
@@ -8,6 +10,10 @@
 texture<float, 2, cudaReadModeElementType> depth_texture;
 texture<float, 2, cudaReadModeElementType> smooth_depth_texture;
 texture<float, 3, cudaReadModeElementType> F_texture;
+
+__constant__ float K[9];
+__constant__ float invK[9];
+__constant__ float Tgk[16];
 
 inline __device__ float length2(float2 v)
 {
@@ -67,9 +73,9 @@ __device__ float3 transform3_affine_inverse(const float* matrix, float3 v)
     return res;
 }
 
-inline __device__ float length(float3 v)
+inline __device__ float length(const float3& v)
 {
-    return sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
+    return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
 }
 
 __device__ float3 normalize(float3 v)
@@ -149,7 +155,7 @@ __global__ void compute_smooth_depth(float* smooth_depth,
 /**
  * Generate vertices and normals from a depth stored in depth_texture.
  */
-__global__ void measure(float3* vertices, float3* normals, int* mask, const float* invK,
+__global__ void measure(float3* vertices, float3* normals, int* mask,
                         int width, int height, size_t pitch)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -178,8 +184,7 @@ __global__ void measure(float3* vertices, float3* normals, int* mask, const floa
 
 __global__ void update_reconstruction(float* F, float* W,
                         int side, float units_per_voxel,
-                        float mu, int init_slice,
-                        const float* K, const float* invK, float* Tgk)
+                        float mu, int init_slice)
 {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
@@ -220,7 +225,6 @@ __global__ void update_reconstruction(float* F, float* W,
 __global__ void raycast(float3* vertices, float3* normals,
                         int width, int height, size_t pitch,
                         int side, float units_per_voxel, float mu,
-                        const float* invK, const float* Tgk,
                         float mindistance, float maxdistance)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -374,21 +378,23 @@ struct transform_depth
 
 void Measurement::setDepth(uint16_t* depth)
 {
-    cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumVertices,
-            cudaMemcpyHostToDevice);
+    cudaSafeCall(cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumVertices,
+            cudaMemcpyHostToDevice));
     thrust::transform(thrust::device_ptr<uint16_t>(mRawDepthGpu),
                       thrust::device_ptr<uint16_t>(mRawDepthGpu + mNumVertices),
                       thrust::device_ptr<float>(mDepthGpu),
                       transform_depth());
     
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
-    cudaBindTexture2D(0, &depth_texture, mDepthGpu, &channelDesc,
-                    mWidth, mHeight, mWidth*sizeof(float));
+    cudaSafeCall(cudaBindTexture2D(0, &depth_texture, mDepthGpu, &channelDesc,
+                    mWidth, mHeight, mWidth*sizeof(float)));
     
     depth_texture.normalized = false;
     depth_texture.filterMode = cudaFilterModePoint;
     depth_texture.addressMode[0] = cudaAddressModeClamp;
     depth_texture.addressMode[1] = cudaAddressModeClamp;
+    
+    cudaSafeCall(cudaMemcpyToSymbol(invK, mKdepth->getInverse(), sizeof(float)*9));
     
     float3* vertices;
     float3* normals;
@@ -397,7 +403,8 @@ void Measurement::setDepth(uint16_t* depth)
     dim3 grid, block(16,16,1);
     grid.x = (mWidth-1)/block.x + 1;
     grid.y = (mHeight-1)/block.y + 1;
-    measure<<<grid,block>>>(vertices, normals, mMaskGpu, mKdepth->getInverseGpu(),
+    measure<<<grid,block>>>(vertices, normals, mMaskGpu,
+                            //mKdepth->getInverseGpu(),
                             mWidth, mHeight, mWidth*12);
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
@@ -409,35 +416,51 @@ void VolumeFusion::initBoundingBox()
     float3 upper = gridToWorld(make_float3(mSide,mSide,mSide), mSide, mUnitsPerVoxel);
     mBoundingBox[0] = lower.x; mBoundingBox[1] = lower.y; mBoundingBox[2] = lower.z;
     mBoundingBox[3] = upper.x; mBoundingBox[4] = upper.y; mBoundingBox[5] = upper.z;
-    std::copy(mBoundingBox, mBoundingBox+6, std::ostream_iterator<float>(std::cout, ", "));
+}
+
+template<typename texture>
+void VolumeFusion::bindTextureToF(texture& tex) const
+{
+    cudaSafeCall(cudaMemcpy3D(mCopyParams));
+    
+    tex.normalized = false;
+    tex.filterMode = cudaFilterModeLinear;
+    tex.addressMode[0] = cudaAddressModeClamp;
+    tex.addressMode[1] = cudaAddressModeClamp;
+    
+    static const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
+    cudaSafeCall(cudaBindTextureToArray(tex, mFArray, channelDesc));
 }
 
 void VolumeFusion::update(const Measurement& measurement, const float* T)
 {
-    cudaMemcpy(mTgkGpu, T, 16*sizeof(float), cudaMemcpyHostToDevice);
-    
     dim3 block(8,8,8);
     dim3 grid;
-    grid.x = grid.y = (mSide-1)/8 + 1;
+    grid.x = grid.y = mSide/block.x;
+    grid.z = 1;
     
-    const float* kdepth = measurement.getKdepth()->getGpu();
-    const float* kdepthinv = measurement.getKdepth()->getInverseGpu();
+    const float* kdepth = measurement.getKdepth()->get();
+    const float* kdepthinv = measurement.getKdepth()->getInverse();
+    cudaSafeCall(cudaMemcpyToSymbol(K, kdepth, sizeof(float)*9));
+    cudaSafeCall(cudaMemcpyToSymbol(invK, kdepthinv, sizeof(float)*9));
+    cudaSafeCall(cudaMemcpyToSymbol(Tgk, T, sizeof(float)*16));
     
-    for(int i=0; i<mSide; i+=8)
-        update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel,
-                                            200.f, i, kdepth,
-                                            kdepthinv, mTgkGpu);
+    for(int i=0; i<mSide; i+=block.z)
+        update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel, 200.f, i);
+    cudaSafeCall(cudaGetLastError());
 }
 
 void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
 {
-    // TODO: Copy F to texture.
-    cudaMemcpy(mTgkGpu, T, 16*sizeof(float), cudaMemcpyHostToDevice);
+    volume.bindTextureToF(F_texture);
     
     float position[3];
     position[0] = T[3]; position[1] = T[7]; position[2] = T[11];
     float mindistance = volume.getMinimumDistanceTo(position);
     float maxdistance = volume.getMaximumDistanceTo(position);
+    
+    cudaSafeCall(cudaMemcpyToSymbol(invK, mKdepth->getInverse(), sizeof(float)*9));
+    cudaSafeCall(cudaMemcpyToSymbol(Tgk, T, sizeof(float)*16));
     
     float3* vertices;
     float3* normals;
@@ -446,14 +469,8 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
     dim3 grid, block(16,16,1);
     grid.x = (mWidth-1)/block.x + 1;
     grid.y = (mHeight-1)/block.y + 1;
-    // __global__ void raycast(float3* vertices, float3* normals,
-    //                         int width, int height, size_t pitch,
-    //                         int side, float units_per_voxel, float mu,
-    //                         float* invK, float* Tgk,
-    //                         float mindistance, float maxdistance)
     raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*12,
                             volume.getSide(), volume.getUnitsPerVoxel(), 200.f,
-                            mKdepth->getInverseGpu(), mTgkGpu,
                             mindistance, maxdistance);
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);

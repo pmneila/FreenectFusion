@@ -2,8 +2,9 @@
 #include "FreenectFusion.h"
 
 #include "glheaders.h"
+#include "cudautils.h"
 
-#include <cuda_runtime_api.h>
+#include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 
 #include <stdexcept>
@@ -11,6 +12,7 @@
 
 #include <cmath>
 #include <numeric>
+#include <iostream>
 
 #define ISPOW2(x) !((x)&((x)-1))
 
@@ -19,15 +21,15 @@ MatrixGpu::MatrixGpu(int side, const double* K, const double* Kinv)
 {
     mK = new float[mSize];
     std::copy(K, K+mSize, mK);
-    cudaMalloc((void**)&mKGpu, sizeof(float)*mSize);
-    cudaMemcpy(mKGpu, mK, sizeof(float)*mSize, cudaMemcpyHostToDevice);
+    cudaSafeCall(cudaMalloc((void**)&mKGpu, sizeof(float)*mSize));
+    cudaSafeCall(cudaMemcpy(mKGpu, mK, sizeof(float)*mSize, cudaMemcpyHostToDevice));
     
     if(Kinv != 0)
     {
         mKinv = new float[mSize];
         std::copy(Kinv, Kinv+mSize, mKinv);
-        cudaMalloc((void**)&mKinvGpu, sizeof(float)*mSize);
-        cudaMemcpy(mKinvGpu, mKinv, sizeof(float)*mSize, cudaMemcpyHostToDevice);
+        cudaSafeCall(cudaMalloc((void**)&mKinvGpu, sizeof(float)*mSize));
+        cudaSafeCall(cudaMemcpy(mKinvGpu, mKinv, sizeof(float)*mSize, cudaMemcpyHostToDevice));
     }
 }
 
@@ -35,8 +37,8 @@ MatrixGpu::~MatrixGpu()
 {
     delete [] mK;
     delete [] mKinv;
-    cudaFree(mKGpu);
-    cudaFree(mKinvGpu);
+    cudaSafeCall(cudaFree(mKGpu));
+    cudaSafeCall(cudaFree(mKinvGpu));
 }
 
 MatrixGpu* MatrixGpu::newIntrinsicMatrix(const double* K)
@@ -63,8 +65,8 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     
     // Depth related data.
     size_t pitch;
-    cudaMallocPitch((void**)&mDepthGpu, &pitch, sizeof(float)*width, height);
-    cudaMallocPitch((void**)&mRawDepthGpu, &pitch, sizeof(uint16_t)*width, height);
+    cudaSafeCall(cudaMallocPitch((void**)&mDepthGpu, &pitch, sizeof(float)*width, height));
+    cudaSafeCall(cudaMallocPitch((void**)&mRawDepthGpu, &pitch, sizeof(uint16_t)*width, height));
     
     mDepth = new float[width * height];
     
@@ -77,25 +79,25 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
     cudaGLRegisterBufferObject(mVertexBuffer);
     cudaGLRegisterBufferObject(mNormalBuffer);
-    cudaMallocPitch((void**)&mMaskGpu, &pitch, sizeof(int)*width, height);
+    cudaSafeCall(cudaMallocPitch((void**)&mMaskGpu, &pitch, sizeof(int)*width, height));
 }
 
 Measurement::~Measurement()
 {
     delete mKdepth;
-    cudaFree(mDepthGpu);
-    cudaFree(mRawDepthGpu);
+    cudaSafeCall(cudaFree(mDepthGpu));
+    cudaSafeCall(cudaFree(mRawDepthGpu));
     delete [] mDepth;
     
     glDeleteBuffers(1, &mVertexBuffer);
     glDeleteBuffers(1, &mNormalBuffer);
-    cudaFree(mMaskGpu);
+    cudaSafeCall(cudaFree(mMaskGpu));
 }
 
 const float* Measurement::getDepthHost() const
 {
-    cudaMemcpy(mDepth, mDepthGpu, sizeof(float)*mNumVertices,
-            cudaMemcpyDeviceToHost);
+    cudaSafeCall(cudaMemcpy(mDepth, mDepthGpu, sizeof(float)*mNumVertices,
+            cudaMemcpyDeviceToHost));
     return mDepth;
 }
 
@@ -105,27 +107,42 @@ VolumeFusion::VolumeFusion(int side, float unitsPerVoxel)
     if(!ISPOW2(mSide))
         throw std::runtime_error("side must be power of 2");
     
-    unsigned int numElements = side*side*side;
-    cudaMalloc((void**)&mFGpu, numElements*sizeof(float));
-    cudaMalloc((void**)&mWGpu, numElements*sizeof(float));
+    unsigned int numElements = mSide*mSide*mSide;
+    cudaSafeCall(cudaMalloc((void**)&mFGpu, numElements*sizeof(float)));
+    cudaSafeCall(cudaMalloc((void**)&mWGpu, numElements*sizeof(float)));
     
     // Fill with zeros.
     float* zero = new float[numElements];
     std::fill(zero, zero+numElements, 0.f);
-    cudaMemcpy(mFGpu, zero, numElements*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(mWGpu, zero, numElements*sizeof(float), cudaMemcpyHostToDevice);
+    cudaSafeCall(cudaMemcpy(mFGpu, zero, numElements*sizeof(float), cudaMemcpyHostToDevice));
+    cudaSafeCall(cudaMemcpy(mWGpu, zero, numElements*sizeof(float), cudaMemcpyHostToDevice));
     delete [] zero;
     
-    cudaMalloc((void**)&mTgkGpu, 16*sizeof(float));
-    
     initBoundingBox();
+    initFArray();
 }
 
 VolumeFusion::~VolumeFusion()
 {
-    cudaFree(mFGpu);
-    cudaFree(mWGpu);
-    cudaFree(mTgkGpu);
+    cudaSafeCall(cudaFree(mFGpu));
+    cudaSafeCall(cudaFree(mWGpu));
+    cudaSafeCall(cudaFreeArray(mFArray));
+}
+
+void VolumeFusion::initFArray()
+{
+    static const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
+    
+    cudaExtent extent = make_cudaExtent(mSide, mSide, mSide);
+    cudaSafeCall(cudaMalloc3DArray(&mFArray, &channelDesc, extent));
+    
+    // Create the copy params.
+    mCopyParams = new cudaMemcpy3DParms;
+    mCopyParams->srcPtr = make_cudaPitchedPtr((void*)mFGpu,
+                                            sizeof(float)*mSide, mSide, mSide);
+    mCopyParams->dstArray = mFArray;
+    mCopyParams->extent = make_cudaExtent(mSide, mSide, mSide);
+    mCopyParams->kind = cudaMemcpyDeviceToDevice;
 }
 
 float VolumeFusion::getMinimumDistanceTo(const float* point) const
@@ -134,7 +151,7 @@ float VolumeFusion::getMinimumDistanceTo(const float* point) const
     float point2[3];
     float point_bbox[3];
     float v[3];
-    int size = mSide / 2;
+    int size = mSide*mUnitsPerVoxel / 2;
     // point2 = point - center
     std::transform(point, point+3, center, point2, std::minus<float>());
     std::copy(point2, point2+3, point_bbox);
@@ -164,7 +181,6 @@ VolumeMeasurement::VolumeMeasurement(int width, int height, const double* Kdepth
     : mWidth(width), mHeight(height), mNumVertices(mWidth*mHeight)
 {
     mKdepth = MatrixGpu::newIntrinsicMatrix(Kdepth);
-    cudaMalloc((void**)&mTgkGpu, 16*sizeof(float));
     
     // Vertices and normals.
     glGenBuffers(1, &mVertexBuffer);
@@ -182,8 +198,6 @@ VolumeMeasurement::~VolumeMeasurement()
     delete mKdepth;
     glDeleteBuffers(1, &mVertexBuffer);
     glDeleteBuffers(1, &mNormalBuffer);
-    
-    cudaFree(mTgkGpu);
 }
 
 FreenectFusion::FreenectFusion(int width, int height,
@@ -196,7 +210,7 @@ FreenectFusion::FreenectFusion(int width, int height,
                                            0.f, 0.f, 0.f, 1.f};
     
     mMeasurement = new Measurement(width, height, Kdepth);
-    mVolume = new VolumeFusion(256, 7.8125f);
+    mVolume = new VolumeFusion(128, 7.8125f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     std::copy(initLocation, initLocation+16, mLocation);
 }

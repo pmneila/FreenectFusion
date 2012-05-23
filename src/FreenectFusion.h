@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 class float2;
+class cudaArray;
+class cudaMemcpy3DParms;
 
 class MatrixGpu
 {
@@ -66,13 +68,16 @@ class VolumeFusion
 private:
     float* mFGpu;
     float* mWGpu;
-    mutable float* mTgkGpu;
+    mutable cudaArray* mFArray;
+    cudaMemcpy3DParms* mCopyParams;
     
     int mSide;
     float mUnitsPerVoxel;
     
     float mBoundingBox[6];
+    
     void initBoundingBox();
+    void initFArray();
     
 public:
     VolumeFusion(int side, float unitsPerVoxel);
@@ -86,6 +91,11 @@ public:
     
     inline int getSide() const {return mSide;}
     inline float getUnitsPerVoxel() const {return mUnitsPerVoxel;}
+    
+    inline const float* getFGpu() const {return mFGpu;}
+    
+    template<typename texture>
+    void bindTextureToF(texture& tex) const;
 };
 
 class VolumeMeasurement
@@ -94,13 +104,15 @@ private:
     int mWidth, mHeight, mNumVertices;
     unsigned int mVertexBuffer, mNormalBuffer;
     MatrixGpu* mKdepth;
-    mutable float* mTgkGpu;
     
 public:
     VolumeMeasurement(int width, int height, const double* Kdepth);
     ~VolumeMeasurement();
     
     void measure(const VolumeFusion& volume, const float* T);
+    
+    inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
+    inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
 };
 
 class FreenectFusion
@@ -120,6 +132,7 @@ public:
     void update(void* depth);
     
     inline Measurement* getMeasurement() const {return mMeasurement;}
+    inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
 };
 
 #endif // _FREENECTFUSION_H
