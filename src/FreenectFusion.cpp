@@ -104,8 +104,8 @@ const float* Measurement::getDepthHost() const
 VolumeFusion::VolumeFusion(int side, float unitsPerVoxel)
     : mSide(side), mUnitsPerVoxel(unitsPerVoxel)
 {
-    if(!ISPOW2(mSide))
-        throw std::runtime_error("side must be power of 2");
+    if(!ISPOW2(mSide) || mSide < 8)
+        throw std::runtime_error("side must be power of 2 and greater or equal to 8");
     
     unsigned int numElements = mSide*mSide*mSide;
     cudaSafeCall(cudaMalloc((void**)&mFGpu, numElements*sizeof(float)));
