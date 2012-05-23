@@ -70,6 +70,36 @@ private:
     FreenectFusion* mFfusion;
     double Krgb[9], Kdepth[9], T[16];
     
+    void drawBoundingBox()
+    {
+        VolumeFusion* volume = mFfusion->getVolume();
+        const float* bbox = volume->getBoundingBox();
+        const float* p1 = bbox; const float* p2 = &bbox[3];
+        glColor3d(1,1,1);
+        glBegin(GL_LINE_LOOP);
+            glVertex3f(p1[0], p1[1], p1[2]);
+            glVertex3f(p2[0], p1[1], p1[2]);
+            glVertex3f(p2[0], p2[1], p1[2]);
+            glVertex3f(p1[0], p2[1], p1[2]);
+        glEnd();
+        glBegin(GL_LINE_LOOP);
+            glVertex3f(p1[0], p1[1], p2[2]);
+            glVertex3f(p2[0], p1[1], p2[2]);
+            glVertex3f(p2[0], p2[1], p2[2]);
+            glVertex3f(p1[0], p2[1], p2[2]);
+        glEnd();
+        glBegin(GL_LINES);
+            glVertex3d(p1[0], p1[1], p1[2]);
+            glVertex3d(p1[0], p1[1], p2[2]);
+            glVertex3d(p2[0], p1[1], p1[2]);
+            glVertex3d(p2[0], p1[1], p2[2]);
+            glVertex3d(p2[0], p2[1], p1[2]);
+            glVertex3d(p2[0], p2[1], p2[2]);
+            glVertex3d(p1[0], p2[1], p1[2]);
+            glVertex3d(p1[0], p2[1], p2[2]);
+        glEnd();
+    }
+    
 public:
     Viewer(int width, int height, const std::string calib_filename)
         : DemoBase(width, height), mFfusion(0)
@@ -96,13 +126,19 @@ protected:
         glDisable(GL_TEXTURE_2D);
         glPointSize(1);
         
+        glMatrixMode(GL_MODELVIEW);
+        glRotated(180, 0, 0, 1);
+        
         glEnableClientState(GL_VERTEX_ARRAY);
         glEnableClientState(GL_COLOR_ARRAY);
+        
         glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getVolumeMeasurement()->getGLVertexBuffer());
         glVertexPointer(3, GL_FLOAT, 12, 0);
         glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getVolumeMeasurement()->getGLNormalBuffer());
         glColorPointer(3, GL_FLOAT, 12, 0);
         glDrawArrays(GL_POINTS, 0, 640*480);
+        
+        drawBoundingBox();
     }
     
     void initGl(int width, int height)

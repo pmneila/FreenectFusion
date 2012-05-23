@@ -132,6 +132,7 @@ public:
     void update(void* depth);
     
     inline Measurement* getMeasurement() const {return mMeasurement;}
+    inline VolumeFusion* getVolume() const {return mVolume;}
     inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
 };
 
