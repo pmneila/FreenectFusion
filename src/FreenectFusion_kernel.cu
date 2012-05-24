@@ -14,6 +14,7 @@ texture<float, 3, cudaReadModeElementType> F_texture;
 __constant__ float K[9];
 __constant__ float invK[9];
 __constant__ float Tgk[16];
+__constant__ float Tk_1k[16];
 
 inline __device__ float length2(float2 v)
 {
@@ -278,13 +279,12 @@ __device__ int2 hom2cart(float3 point)
     return make_int2(roundf(point.x/point.z), roundf(point.y/point.z));
 }
 
-__global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
+__global__ void compute_tracking_matrices(float* AA, float* Ab,
                         float3* vertices_measure, float3* normals_measure,
                         float3* vertices_raycast, float3* normals_raycast,
                         int width, int height,
                         size_t AA_pitch, size_t Ab_pitch,
-                        float* mask,
-                        const float* K, const float* Tgk, const float* Tgk1_k,
+                        const int* mask,
                         float threshold_distance)
 {
     int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -300,14 +300,11 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     float3 vertex_measure = vertices_measure[thid];
     
     // Get the corresponding pixel in the raycast image.
-    int2 u_raycast = hom2cart(project(K, Tgk1_k, vertex_measure));
+    int2 u_raycast = hom2cart(project(K, Tk_1k, vertex_measure));
     
     if(u_raycast.x < 0 || u_raycast.y < 0 ||
-        u_raycast.x >= width || u_raycast.y >= height)
-    {
-        omega[thid] = 0.f;
+            u_raycast.x >= width || u_raycast.y >= height)
         return;
-    }
     
     int id_raycast = width*u_raycast.y + u_raycast.x;
     float3 vertex_raycast = vertices_raycast[id_raycast];
@@ -317,11 +314,8 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     float vertex_distance = length(vdiff);
     
     // Prune invalid matches.
-    if(mask[thid] < 0.5f || vertex_distance > threshold_distance)
-    {
-        omega[thid] = 0.f;
+    if(!mask[thid] || vertex_distance > threshold_distance)
         return;
-    }
     
     normals_measure[thid] = make_float3(1,1,1);
     
@@ -360,7 +354,6 @@ __global__ void compute_tracking_matrices(float* AA, float* Ab, float* omega,
     current_AA[19] = n.y*n.z;
     
     current_AA[20] = n.z*n.z;
-    omega[thid] = 1.f;
 }
 
 /// Transform Kinect depth measurements to milimeters.
@@ -474,4 +467,42 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
                             mindistance, maxdistance);
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
+    
+    // Preserve the current T.
+    std::copy(T, T+16, mT);
+}
+
+void Tracker::trackStep(float* newT, const float* currentT, const float* current2InitT,
+                        float3* verticesOld, float3* normalsOld,
+                        float3* verticesNew, float3* normalsNew,
+                        const Measurement& meas, const VolumeMeasurement& volMeas)
+{
+    thrust::fill(thrust::device_ptr<float>(mAAGpu),
+                thrust::device_ptr<float>(mAAGpu + 21*mMaxNumVertices), 0.f);
+    thrust::fill(thrust::device_ptr<float>(mAbGpu),
+                thrust::device_ptr<float>(mAbGpu + 6*mMaxNumVertices), 0.f);
+    ;
+    dim3 block(16,16,1), grid;
+    grid.x = (meas.getWidth() - 1)/block.x + 1;
+    grid.y = (meas.getHeight() - 1)/block.y + 1;
+    
+    //cudaSafeCall(cudaMemcpy(mCurrentTGpu, currentT, sizeof(float)*16, cudaMemcpyHostToDevice));
+    //cudaSafeCall(cudaMemcpy(mCurrent2InitTGpu, current2InitT, sizeof(float)*16, cudaMemcpyHostToDevice));
+    cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
+    cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
+    cudaSafeCall(cudaMemcpyToSymbol(K, meas.getKdepth()->get(), sizeof(float)*9));
+    // __global__ void compute_tracking_matrices(float* AA, float* Ab,
+    //                         float3* vertices_measure, float3* normals_measure,
+    //                         float3* vertices_raycast, float3* normals_raycast,
+    //                         int width, int height,
+    //                         size_t AA_pitch, size_t Ab_pitch,
+    //                         const int* mask,
+    //                         float threshold_distance)
+    compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
+                                              verticesOld, normalsOld,
+                                              verticesNew, normalsNew,
+                                              meas.getWidth(), meas.getHeight(),
+                                              sizeof(float)*21, sizeof(float)*6,
+                                              meas.getMaskGpu(),
+                                              20.f);
 }

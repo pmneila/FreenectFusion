@@ -16,6 +16,34 @@
 
 #define ISPOW2(x) !((x)&((x)-1))
 
+static void invertTransform(float* res, const float* T)
+{
+    res[0] = T[0]; res[1] = T[4]; res[2] = T[8];
+    res[4] = T[1]; res[5] = T[5]; res[6] = T[9];
+    res[8] = T[2]; res[9] = T[6]; res[10] = T[10];
+    res[3] = -(res[0]*T[3] + res[1]*T[7] + res[2]*T[11]);
+    res[7] = -(res[4]*T[3] + res[5]*T[7] + res[6]*T[11]);
+    res[11] = -(res[8]*T[3] + res[9]*T[7] + res[10]*T[11]);
+    res[12] = res[13] = res[14] = 0.f;
+    res[15] = 1.f;
+}
+
+static void multiplyTransforms(float* res, const float* T1, const float* T2)
+{
+    for(int i=0; i<4; ++i)
+    {
+        for(int j=0; j<4; ++j)
+        {
+            int offset = i*4+j;
+            res[offset] = 0;
+            for(int k=0; k<4; ++k)
+            {
+                res[offset] += T1[i*4+k]*T2[k*4+j];
+            }
+        }
+    }
+}
+
 MatrixGpu::MatrixGpu(int side, const double* K, const double* Kinv)
     : mSide(side), mSize(side*side)
 {
@@ -200,9 +228,67 @@ VolumeMeasurement::~VolumeMeasurement()
     glDeleteBuffers(1, &mNormalBuffer);
 }
 
+Tracker::Tracker(int maxNumVertices)
+    : mMaxNumVertices(maxNumVertices)
+{
+    cudaSafeCall(cudaMalloc((void**)&mAAGpu, sizeof(float)*maxNumVertices*21));
+    cudaSafeCall(cudaMalloc((void**)&mAbGpu, sizeof(float)*maxNumVertices*6));
+    cudaSafeCall(cudaMalloc((void**)&mCurrentTGpu, sizeof(float)*16));
+    cudaSafeCall(cudaMalloc((void**)&mCurrent2InitTGpu, sizeof(float)*16));
+}
+
+Tracker::~Tracker()
+{
+    cudaSafeCall(cudaFree(mAAGpu));
+    cudaSafeCall(cudaFree(mAbGpu));
+    cudaSafeCall(cudaFree(mCurrentTGpu));
+    cudaSafeCall(cudaFree(mCurrent2InitTGpu));
+}
+
+void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
+                    const float* initT)
+{
+    // TODO: Asserts of shapes.
+    if(initT == 0)
+        initT = volMeas.getTransform();
+    
+    float currentT[16];
+    float current2InitT[16] = {1.f, 0.f, 0.f, 0.f,
+                               0.f, 1.f, 0.f, 0.f,
+                               0.f, 0.f, 1.f, 0.f,
+                               0.f, 0.f, 0.f, 1.f};
+    float initTinv[16];
+    std::copy(initT, initT+16, currentT);
+    invertTransform(initTinv, initT);
+    
+    float3* verticesMeasure;
+    float3* normalsMeasure;
+    float3* verticesVolume;
+    float3* normalsVolume;
+    // TODO: Are these heavy calls?
+    cudaGLMapBufferObject((void**)&verticesMeasure, meas.getGLVertexBuffer());
+    cudaGLMapBufferObject((void**)&normalsMeasure, meas.getGLNormalBuffer());
+    cudaGLMapBufferObject((void**)&verticesVolume, volMeas.getGLVertexBuffer());
+    cudaGLMapBufferObject((void**)&normalsVolume, volMeas.getGLNormalBuffer());
+    
+    for(int i=0; i<1; ++i)
+    {
+        if(i!=0)
+            multiplyTransforms(current2InitT, initTinv, currentT);
+        trackStep(currentT, currentT, current2InitT,
+                  verticesVolume, normalsVolume, verticesMeasure, normalsMeasure,
+                  meas, volMeas);
+    }
+    
+    cudaGLUnmapBufferObject(meas.getGLVertexBuffer());
+    cudaGLUnmapBufferObject(meas.getGLNormalBuffer());
+    cudaGLUnmapBufferObject(volMeas.getGLVertexBuffer());
+    cudaGLUnmapBufferObject(volMeas.getGLNormalBuffer());
+}
+
 FreenectFusion::FreenectFusion(int width, int height,
                         const double* Kdepth, const double* Krgb)
-    : mWidth(width), mHeight(height)
+    : mWidth(width), mHeight(height), mActiveTracking(false)
 {
     static const float initLocation[16] = {1.f, 0.f, 0.f, 0.f,
                                            0.f, 1.f, 0.f, 0.f,
@@ -212,6 +298,7 @@ FreenectFusion::FreenectFusion(int width, int height,
     mMeasurement = new Measurement(width, height, Kdepth);
     mVolume = new VolumeFusion(128, 7.8125f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
+    mTracker = new Tracker(width*height);
     std::copy(initLocation, initLocation+16, mLocation);
 }
 
@@ -220,6 +307,7 @@ FreenectFusion::~FreenectFusion()
     delete mMeasurement;
     delete mVolume;
     delete mVolumeMeasurement;
+    delete mTracker;
 }
 
 void FreenectFusion::update(void* depth)
@@ -227,4 +315,6 @@ void FreenectFusion::update(void* depth)
     mMeasurement->setDepth((uint16_t*)depth);
     mVolume->update(*mMeasurement, mLocation);
     mVolumeMeasurement->measure(*mVolume, mLocation);
+    if(mActiveTracking)
+        mTracker->track(*mMeasurement, *mVolumeMeasurement);
 }

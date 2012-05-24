@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 class float2;
+class float3;
 class cudaArray;
 class cudaMemcpy3DParms;
 
@@ -57,10 +58,15 @@ public:
     inline const float* getDepthGpu() const {return mDepthGpu;}
     const float* getDepthHost() const;
     
+    inline const int* getMaskGpu() const {return mMaskGpu;}
+    
     inline const MatrixGpu* getKdepth() const {return mKdepth;}
     
     inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
+    
+    inline int getWidth() const {return mWidth;}
+    inline int getHeight() const {return mHeight;}
 };
 
 class VolumeFusion
@@ -104,6 +110,7 @@ private:
     int mWidth, mHeight, mNumVertices;
     unsigned int mVertexBuffer, mNormalBuffer;
     MatrixGpu* mKdepth;
+    float mT[16];
     
 public:
     VolumeMeasurement(int width, int height, const double* Kdepth);
@@ -113,6 +120,30 @@ public:
     
     inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
+    inline const float* getTransform() const {return mT;}
+};
+
+class Tracker
+{
+private:
+    int mMaxNumVertices;
+    float* mAAGpu;
+    float* mAbGpu;
+    float mAA[21];
+    float mAb[6];
+    mutable float* mCurrentTGpu;
+    mutable float* mCurrent2InitTGpu;
+    
+    void trackStep(float* newT, const float* currentT, const float* current2InitT,
+                   float3* verticesOld, float3* normalsOld,
+                   float3* verticesNew, float3* normalsNew,
+                   const Measurement& meas, const VolumeMeasurement& volMeas);
+    
+public:
+    Tracker(int maxNumVertices);
+    ~Tracker();
+    void track(const Measurement& meas, const VolumeMeasurement& volMeas,
+                const float* initT=0);
 };
 
 class FreenectFusion
@@ -122,7 +153,10 @@ private:
     Measurement* mMeasurement;
     VolumeFusion* mVolume;
     VolumeMeasurement* mVolumeMeasurement;
+    Tracker* mTracker;
     float mLocation[16];
+    
+    bool mActiveTracking;
     
 public:
     FreenectFusion(int width, int height,
@@ -134,6 +168,9 @@ public:
     inline Measurement* getMeasurement() const {return mMeasurement;}
     inline VolumeFusion* getVolume() const {return mVolume;}
     inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
+    
+    inline void setTracking(bool on) {mActiveTracking = on;}
+    inline bool isTracking() const {return mActiveTracking;}
 };
 
 #endif // _FREENECTFUSION_H
