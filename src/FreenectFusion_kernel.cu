@@ -399,6 +399,7 @@ void Measurement::setDepth(uint16_t* depth)
     measure<<<grid,block>>>(vertices, normals, mMaskGpu,
                             //mKdepth->getInverseGpu(),
                             mWidth, mHeight, mWidth*12);
+    cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
 }
@@ -465,6 +466,7 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
     raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*12,
                             volume.getSide(), volume.getUnitsPerVoxel(), 200.f,
                             mindistance, maxdistance);
+    cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
     
@@ -496,4 +498,5 @@ void Tracker::trackStep(float* newT, const float* currentT, const float* current
                                               sizeof(float)*21, sizeof(float)*6,
                                               meas.getMaskGpu(),
                                               20.f);
+    cudaSafeCall(cudaGetLastError());
 }
