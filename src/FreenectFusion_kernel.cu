@@ -245,11 +245,11 @@ __global__ void raycast(float3* vertices, float3* normals,
     
     float step = 3.f*mu/4.f;
     float3 p = worldToGrid(tgk + mindistance * ray, side, units_per_voxel);
-    float old_value = tex3D(F_texture, p.x, p.y, p.z);
+    float old_value = tex3D(F_texture, p.x+0.5f, p.y+0.5f, p.z+0.5f);
     for(float distance = mindistance; distance < maxdistance; distance += step)
     {
         p = worldToGrid(tgk + distance * ray, side, units_per_voxel);
-        float value = tex3D(F_texture, p.x, p.y, p.z);
+        float value = tex3D(F_texture, p.x+0.5f, p.y+0.5f, p.z+0.5f);
         
         if(value < -2 || (old_value < 0 && value > 0))
             break;
@@ -257,9 +257,9 @@ __global__ void raycast(float3* vertices, float3* normals,
         {
             float t = distance - step - (step * old_value)/(value - old_value);
             *current_vertex = tgk + t * ray;
-            float valuex = tex3D(F_texture, p.x-1, p.y, p.z);
-            float valuey = tex3D(F_texture, p.x, p.y-1, p.z);
-            float valuez = tex3D(F_texture, p.x, p.y, p.z-1);
+            float valuex = tex3D(F_texture, p.x-1+0.5f, p.y+0.5f, p.z+0.5f);
+            float valuey = tex3D(F_texture, p.x+0.5f, p.y-1+0.5f, p.z+0.5f);
+            float valuez = tex3D(F_texture, p.x+0.5f, p.y+0.5f, p.z-1+0.5f);
             *current_normal = normalize(make_float3(valuex-value, valuey-value, valuez-value));
             return;
         }
@@ -486,18 +486,9 @@ void Tracker::trackStep(float* newT, const float* currentT, const float* current
     grid.x = (meas.getWidth() - 1)/block.x + 1;
     grid.y = (meas.getHeight() - 1)/block.y + 1;
     
-    //cudaSafeCall(cudaMemcpy(mCurrentTGpu, currentT, sizeof(float)*16, cudaMemcpyHostToDevice));
-    //cudaSafeCall(cudaMemcpy(mCurrent2InitTGpu, current2InitT, sizeof(float)*16, cudaMemcpyHostToDevice));
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
     cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
     cudaSafeCall(cudaMemcpyToSymbol(K, meas.getKdepth()->get(), sizeof(float)*9));
-    // __global__ void compute_tracking_matrices(float* AA, float* Ab,
-    //                         float3* vertices_measure, float3* normals_measure,
-    //                         float3* vertices_raycast, float3* normals_raycast,
-    //                         int width, int height,
-    //                         size_t AA_pitch, size_t Ab_pitch,
-    //                         const int* mask,
-    //                         float threshold_distance)
     compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
                                               verticesOld, normalsOld,
                                               verticesNew, normalsNew,
