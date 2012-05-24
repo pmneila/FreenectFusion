@@ -168,6 +168,7 @@ public:
     inline Measurement* getMeasurement() const {return mMeasurement;}
     inline VolumeFusion* getVolume() const {return mVolume;}
     inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
+    inline const float* getLocation() const {return mLocation;}
     
     inline void setTracking(bool on) {mActiveTracking = on;}
     inline bool isTracking() const {return mActiveTracking;}

@@ -63,12 +63,22 @@ void read_calib_file(double* Krgb, double* Kdepth, double* T, const std::string&
     ifs.close();
 }
 
+static void transposeTransform(float* res, const float* T)
+{
+    res[0] = T[0]; res[1] = T[4]; res[2] = T[8]; res[3] = T[12];
+    res[4] = T[1]; res[5] = T[5]; res[6] = T[9]; res[7] = T[13];
+    res[8] = T[2]; res[9] = T[6]; res[10] = T[10]; res[11] = T[14];
+    res[12] = T[3]; res[13] = T[7]; res[14] = T[11]; res[15] = T[15];
+}
+
 class Viewer : public DemoBase
 {
 private:
     GLuint mTexture;
     FreenectFusion* mFfusion;
     double Krgb[9], Kdepth[9], T[16];
+    
+    bool mDrawFlags[3];
     
     void drawBoundingBox()
     {
@@ -105,6 +115,9 @@ public:
         : DemoBase(width, height), mFfusion(0)
     {
         read_calib_file(Krgb, Kdepth, T, calib_filename);
+        mDrawFlags[0] = true;
+        mDrawFlags[1] = true;
+        mDrawFlags[2] = false;
     }
     
     ~Viewer()
@@ -117,6 +130,7 @@ protected:
     {
         void* image = 0;
         void* depth = 0;
+        float aux[16];
         uint32_t timestamp;
         freenect_sync_get_video(&image, &timestamp, 0, FREENECT_VIDEO_RGB);
         freenect_sync_get_depth(&depth, &timestamp, 0, FREENECT_DEPTH_11BIT);
@@ -132,11 +146,27 @@ protected:
         glEnableClientState(GL_VERTEX_ARRAY);
         glEnableClientState(GL_COLOR_ARRAY);
         
-        glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getVolumeMeasurement()->getGLVertexBuffer());
-        glVertexPointer(3, GL_FLOAT, 12, 0);
-        glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getVolumeMeasurement()->getGLNormalBuffer());
-        glColorPointer(3, GL_FLOAT, 12, 0);
-        glDrawArrays(GL_POINTS, 0, 640*480);
+        if(mDrawFlags[1])
+        {
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getVolumeMeasurement()->getGLVertexBuffer());
+            glVertexPointer(3, GL_FLOAT, 12, 0);
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getVolumeMeasurement()->getGLNormalBuffer());
+            glColorPointer(3, GL_FLOAT, 12, 0);
+            glDrawArrays(GL_POINTS, 0, 640*480);
+        }
+        
+        if(mDrawFlags[2])
+        {
+            glPushMatrix();
+            transposeTransform(aux, mFfusion->getLocation());
+            glMultMatrixf(aux);
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLVertexBuffer());
+            glVertexPointer(3, GL_FLOAT, 12, 0);
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLNormalBuffer());
+            glColorPointer(3, GL_FLOAT, 12, 0);
+            glDrawArrays(GL_POINTS, 0, 640*480);
+            glPopMatrix();
+        }
         
         drawBoundingBox();
     }
@@ -159,6 +189,12 @@ protected:
     {
         if(key == 27)
             freenect_sync_stop();
+        if(key == '0')
+            mDrawFlags[0] ^= true;
+        if(key == '1')
+            mDrawFlags[1] ^= true;
+        if(key == '2')
+            mDrawFlags[2] ^= true;
         
         DemoBase::keyboardPressEvent(key, x, y);
     }
