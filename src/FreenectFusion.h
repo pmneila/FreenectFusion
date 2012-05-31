@@ -133,17 +133,21 @@ private:
     float mAb[6];
     mutable float* mCurrentTGpu;
     mutable float* mCurrent2InitTGpu;
+    float mTrackTransform[16];
     
-    void trackStep(float* newT, const float* currentT, const float* current2InitT,
+    void trackStep(float* AA, float* Ab, const float* currentT, const float* current2InitT,
                    float3* verticesOld, float3* normalsOld,
                    float3* verticesNew, float3* normalsNew,
                    const Measurement& meas, const VolumeMeasurement& volMeas);
+    
+    void solveSystem(float* incT, const float* AA, const float* Ab);
     
 public:
     Tracker(int maxNumVertices);
     ~Tracker();
     void track(const Measurement& meas, const VolumeMeasurement& volMeas,
-                const float* initT=0);
+                const float* initT=0, float* res=0);
+    inline const float* getTrackTranform() const {return mTrackTransform;}
 };
 
 class FreenectFusion
@@ -170,6 +174,7 @@ public:
     inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
     inline const float* getLocation() const {return mLocation;}
     
+    inline void toggleTracking() {mActiveTracking ^= 1;}
     inline void setTracking(bool on) {mActiveTracking = on;}
     inline bool isTracking() const {return mActiveTracking;}
 };

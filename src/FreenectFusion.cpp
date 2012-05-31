@@ -14,6 +14,8 @@
 #include <numeric>
 #include <iostream>
 
+#include "Eigen/Dense"
+
 #define ISPOW2(x) !((x)&((x)-1))
 
 static void invertTransform(float* res, const float* T)
@@ -246,13 +248,15 @@ Tracker::~Tracker()
 }
 
 void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
-                    const float* initT)
+                    const float* initT, float* res)
 {
     // TODO: Asserts of shapes.
     if(initT == 0)
         initT = volMeas.getTransform();
     
-    float currentT[16];
+    float AA[21], Ab[16];
+    float currentT[16], currentT2[16];
+    float incT[16];
     float current2InitT[16] = {1.f, 0.f, 0.f, 0.f,
                                0.f, 1.f, 0.f, 0.f,
                                0.f, 0.f, 1.f, 0.f,
@@ -265,25 +269,75 @@ void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
     float3* normalsMeasure;
     float3* verticesVolume;
     float3* normalsVolume;
+    
     // TODO: Are these heavy calls?
     cudaGLMapBufferObject((void**)&verticesMeasure, meas.getGLVertexBuffer());
     cudaGLMapBufferObject((void**)&normalsMeasure, meas.getGLNormalBuffer());
     cudaGLMapBufferObject((void**)&verticesVolume, volMeas.getGLVertexBuffer());
     cudaGLMapBufferObject((void**)&normalsVolume, volMeas.getGLNormalBuffer());
     
-    for(int i=0; i<1; ++i)
+    for(int i=0; i<3; ++i)
     {
         if(i!=0)
             multiplyTransforms(current2InitT, initTinv, currentT);
-        trackStep(currentT, currentT, current2InitT,
+        trackStep(AA, Ab, currentT, current2InitT,
                   verticesVolume, normalsVolume, verticesMeasure, normalsMeasure,
                   meas, volMeas);
+        solveSystem(incT, AA, Ab);
+        multiplyTransforms(currentT2, incT, currentT);
+        std::copy(currentT2, currentT2+16, currentT);
     }
     
     cudaGLUnmapBufferObject(meas.getGLVertexBuffer());
     cudaGLUnmapBufferObject(meas.getGLNormalBuffer());
     cudaGLUnmapBufferObject(volMeas.getGLVertexBuffer());
     cudaGLUnmapBufferObject(volMeas.getGLNormalBuffer());
+    
+    if(res!=0)
+        std::copy(currentT, currentT+16, res);
+    
+    std::copy(currentT, currentT+16, mTrackTransform);
+}
+
+void Tracker::solveSystem(float* incT, const float* AA, const float* Ab)
+{
+    typedef Eigen::Matrix<float, 6, 6> Matrix66f;
+    typedef Eigen::Matrix<float, 6, 1> Vector6f;
+    typedef Eigen::Matrix<float, 4, 4, Eigen::RowMajor> Matrix4fr;
+    Matrix66f matAA;
+    Vector6f matAb;
+    Matrix4fr res = Eigen::Matrix4f::Identity();
+    
+    // Copy the input matrices into Eigen::Matrix instances.
+    for(int i=0; i<6; ++i)
+        for(int j=0; j<6; ++j)
+        {
+            if(i<=j)
+                matAA(i,j) = AA[((11 - i)*i)/2 + j];//[i*6 - ((i*(i+1))/2) + j];
+            else
+                matAA(i,j) = AA[((11 - j)*j)/2 + i];
+        }
+    std::copy(Ab, Ab+6, matAb.data());
+    // Solve the system.
+    Vector6f aux = matAA.ldlt().solve(matAb);
+    
+    if(!std::isnan(aux(0)))
+    {
+        // Build the rotation matrix.
+        Eigen::Matrix3f rot;
+        rot << 1, aux(2), -aux(1),
+               -aux(2), 1, aux(0),
+               aux(1), -aux(0), 1;
+        Eigen::JacobiSVD<Eigen::Matrix3f> svd(rot, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        rot = svd.matrixU() * svd.matrixV().transpose();
+    
+        // Buld the transformation matrix.
+        res.block<3,3>(0,0) = rot;
+        res.block<3,1>(0,3) = aux.block<3,1>(3,0);
+    }
+    
+    //std::cout << res << std::endl << std::endl;
+    std::copy(res.data(), res.data()+16, incT);
 }
 
 FreenectFusion::FreenectFusion(int width, int height,

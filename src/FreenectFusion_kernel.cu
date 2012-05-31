@@ -474,7 +474,46 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
     std::copy(T, T+16, mT);
 }
 
-void Tracker::trackStep(float* newT, const float* currentT, const float* current2InitT,
+template<int T>
+struct floatN
+{
+    float a[T];
+    
+    __host__ __device__
+    floatN()
+    {
+        for(int i=0; i<T; ++i)
+            a[i] = 0.f;
+    }
+    
+    __host__ __device__
+    floatN(float v)
+    {
+        for(int i=0; i<T; ++i)
+            a[i] = v;
+    }
+};
+
+__device__
+floatN<21> operator+(const floatN<21>& a, const floatN<21>& b)
+{
+    floatN<21> res;
+    for(int i=0; i<21; ++i)
+        res.a[i] = a.a[i] + b.a[i];
+    return res;
+}
+
+__device__
+floatN<6> operator+(const floatN<6>& a, const floatN<6>& b)
+{
+    floatN<6> res;
+    for(int i=0; i<6; ++i)
+        res.a[i] = a.a[i] + b.a[i];
+    return res;
+}
+
+void Tracker::trackStep(float* AA, float* Ab, const float* currentT,
+                        const float* current2InitT,
                         float3* verticesOld, float3* normalsOld,
                         float3* verticesNew, float3* normalsNew,
                         const Measurement& meas, const VolumeMeasurement& volMeas)
@@ -491,12 +530,30 @@ void Tracker::trackStep(float* newT, const float* currentT, const float* current
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
     cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
     cudaSafeCall(cudaMemcpyToSymbol(K, meas.getKdepth()->get(), sizeof(float)*9));
+    // __global__ void compute_tracking_matrices(float* AA, float* Ab,
+    //                         float3* vertices_measure, float3* normals_measure,
+    //                         float3* vertices_raycast, float3* normals_raycast,
+    //                         int width, int height,
+    //                         size_t AA_pitch, size_t Ab_pitch,
+    //                         const int* mask,
+    //                         float threshold_distance)
     compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
-                                              verticesOld, normalsOld,
                                               verticesNew, normalsNew,
+                                              verticesOld, normalsOld,
                                               meas.getWidth(), meas.getHeight(),
                                               sizeof(float)*21, sizeof(float)*6,
                                               meas.getMaskGpu(),
                                               20.f);
     cudaSafeCall(cudaGetLastError());
+    
+    // Sum AA and Ab.
+    floatN<21> _AA = thrust::reduce(thrust::device_ptr<floatN<21> >((floatN<21>*)mAAGpu),
+                        thrust::device_ptr<floatN<21> >(((floatN<21>*)mAAGpu) + mMaxNumVertices),
+                        floatN<21>(0.f), thrust::plus<floatN<21> >());
+    floatN<6> _Ab = thrust::reduce(thrust::device_ptr<floatN<6> >((floatN<6>*)mAbGpu),
+                        thrust::device_ptr<floatN<6> >(((floatN<6>*)mAbGpu) + mMaxNumVertices),
+                        floatN<6>(0.f), thrust::plus<floatN<6> >());
+    ;
+    std::copy(_AA.a, _AA.a+21, AA);
+    std::copy(_Ab.a, _Ab.a+6, Ab);
 }

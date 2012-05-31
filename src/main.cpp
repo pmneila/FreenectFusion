@@ -195,6 +195,8 @@ protected:
             mDrawFlags[1] ^= true;
         if(key == '2')
             mDrawFlags[2] ^= true;
+        if(key == 't')
+            mFfusion->toggleTracking();
         
         DemoBase::keyboardPressEvent(key, x, y);
     }
