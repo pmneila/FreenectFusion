@@ -147,7 +147,7 @@ public:
     ~Tracker();
     void track(const Measurement& meas, const VolumeMeasurement& volMeas,
                 const float* initT=0, float* res=0);
-    inline const float* getTrackTranform() const {return mTrackTransform;}
+    inline const float* getTrackTransform() const {return mTrackTransform;}
 };
 
 class FreenectFusion

@@ -370,5 +370,9 @@ void FreenectFusion::update(void* depth)
     mVolume->update(*mMeasurement, mLocation);
     mVolumeMeasurement->measure(*mVolume, mLocation);
     if(mActiveTracking)
+    {
         mTracker->track(*mMeasurement, *mVolumeMeasurement);
+        const float* newT = mTracker->getTrackTransform();
+        std::copy(newT, newT+16, mLocation);
+    }
 }

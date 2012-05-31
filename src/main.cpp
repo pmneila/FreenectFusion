@@ -110,6 +110,26 @@ private:
         glEnd();
     }
     
+    void drawSensor()
+    {
+        float aux[16];
+        glPushMatrix();
+        transposeTransform(aux, mFfusion->getLocation());
+        glMultMatrixf(aux);
+        glPointSize(5);
+        glBegin(GL_POINTS);
+        glColor3d(1.0,1.0,1.0);
+        glVertex3d(0., 0., 0.);
+        glColor3d(1., 0., 0.);
+        glVertex3d(100.0, 0, 0);
+        glColor3d(0., 1., 0.);
+        glVertex3d(0, 100.0, 0);
+        glColor3d(0., 0., 1.);
+        glVertex3d(0, 0, 100.0);
+        glEnd();
+        glPopMatrix();
+    }
+    
 public:
     Viewer(int width, int height, const std::string calib_filename)
         : DemoBase(width, height), mFfusion(0)
@@ -169,6 +189,7 @@ protected:
         }
         
         drawBoundingBox();
+        drawSensor();
     }
     
     void initGl(int width, int height)
