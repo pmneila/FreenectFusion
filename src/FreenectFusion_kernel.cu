@@ -2,7 +2,7 @@
 #include "FreenectFusion.h"
 
 #include "cudautils.h"
-
+#include "cudamath.h"
 #include <cuda_gl_interop.h>
 #include <thrust/transform.h>
 #include <thrust/fill.h>
@@ -15,36 +15,6 @@ __constant__ float K[9];
 __constant__ float invK[9];
 __constant__ float Tgk[16];
 __constant__ float Tk_1k[16];
-
-inline __device__ float length2(float2 v)
-{
-    return sqrtf(v.x*v.x + v.y*v.y);
-}
-
-inline __device__ float dot(float3 a, float3 b)
-{
-    return a.x*b.x + a.y*b.y + a.z*b.z;
-}
-
-inline __device__ float3 cross(float3 a, float3 b)
-{ 
-    return make_float3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x); 
-}
-
-inline __device__ float3 operator+(float3 a, float3 b)
-{
-    return make_float3(a.x+b.x, a.y+b.y, a.z+b.z);
-}
-
-inline __device__ float3 operator-(float3 a, float3 b)
-{
-    return make_float3(a.x-b.x, a.y-b.y, a.z-b.z);
-}
-
-inline __device__ float3 operator*(float s, float3 a)
-{
-    return make_float3(a.x * s, a.y * s, a.z * s);
-}
 
 __device__ float3 transform3(const float* matrix, float3 v)
 {
@@ -72,11 +42,6 @@ __device__ float3 transform3_affine_inverse(const float* matrix, float3 v)
     res.y = matrix[1]*v2.x + matrix[5]*v2.y + matrix[9]*v2.z;
     res.z = matrix[2]*v2.x + matrix[6]*v2.y + matrix[10]*v2.z;
     return res;
-}
-
-inline __device__ float length(const float3& v)
-{
-    return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
 }
 
 __device__ float3 normalize(float3 v)

@@ -104,9 +104,9 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     glGenBuffers(1, &mVertexBuffer);
     glGenBuffers(1, &mNormalBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, mVertexBuffer);
-    glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), 0, GL_DYNAMIC_COPY);
     glBindBuffer(GL_ARRAY_BUFFER, mNormalBuffer);
-    glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), 0, GL_DYNAMIC_COPY);
     cudaGLRegisterBufferObject(mVertexBuffer);
     cudaGLRegisterBufferObject(mNormalBuffer);
     cudaSafeCall(cudaMallocPitch((void**)&mMaskGpu, &pitch, sizeof(int)*width, height));
@@ -119,6 +119,8 @@ Measurement::~Measurement()
     cudaSafeCall(cudaFree(mRawDepthGpu));
     delete [] mDepth;
     
+    cudaSafeCall(cudaGLUnregisterBufferObject(mVertexBuffer));
+    cudaSafeCall(cudaGLUnregisterBufferObject(mNormalBuffer));
     glDeleteBuffers(1, &mVertexBuffer);
     glDeleteBuffers(1, &mNormalBuffer);
     cudaSafeCall(cudaFree(mMaskGpu));
@@ -131,8 +133,8 @@ const float* Measurement::getDepthHost() const
     return mDepth;
 }
 
-VolumeFusion::VolumeFusion(int side, float unitsPerVoxel)
-    : mSide(side), mUnitsPerVoxel(unitsPerVoxel)
+VolumeFusion::VolumeFusion(int sidelog, float unitsPerVoxel)
+    : mSideLog(sidelog), mSide(1<<sidelog), mUnitsPerVoxel(unitsPerVoxel)
 {
     if(!ISPOW2(mSide) || mSide < 8)
         throw std::runtime_error("side must be power of 2 and greater or equal to 8");
@@ -216,9 +218,9 @@ VolumeMeasurement::VolumeMeasurement(int width, int height, const double* Kdepth
     glGenBuffers(1, &mVertexBuffer);
     glGenBuffers(1, &mNormalBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, mVertexBuffer);
-    glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), NULL, GL_DYNAMIC_COPY);
     glBindBuffer(GL_ARRAY_BUFFER, mNormalBuffer);
-    glBufferData(GL_ARRAY_BUFFER, mNumVertices*12, NULL, GL_DYNAMIC_COPY);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), NULL, GL_DYNAMIC_COPY);
     cudaGLRegisterBufferObject(mVertexBuffer);
     cudaGLRegisterBufferObject(mNormalBuffer);
 }
@@ -226,6 +228,8 @@ VolumeMeasurement::VolumeMeasurement(int width, int height, const double* Kdepth
 VolumeMeasurement::~VolumeMeasurement()
 {
     delete mKdepth;
+    cudaSafeCall(cudaGLUnregisterBufferObject(mVertexBuffer));
+    cudaSafeCall(cudaGLUnregisterBufferObject(mNormalBuffer));
     glDeleteBuffers(1, &mVertexBuffer);
     glDeleteBuffers(1, &mNormalBuffer);
 }
@@ -350,7 +354,7 @@ FreenectFusion::FreenectFusion(int width, int height,
                                            0.f, 0.f, 0.f, 1.f};
     
     mMeasurement = new Measurement(width, height, Kdepth);
-    mVolume = new VolumeFusion(128, 7.8125f);
+    mVolume = new VolumeFusion(7, 7.8125f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     mTracker = new Tracker(width*height);
     std::copy(initLocation, initLocation+16, mLocation);

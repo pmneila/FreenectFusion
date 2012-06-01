@@ -77,7 +77,7 @@ private:
     mutable cudaArray* mFArray;
     cudaMemcpy3DParms* mCopyParams;
     
-    int mSide;
+    int mSideLog, mSide;
     float mUnitsPerVoxel;
     
     float mBoundingBox[6];
@@ -86,7 +86,7 @@ private:
     void initFArray();
     
 public:
-    VolumeFusion(int side, float unitsPerVoxel);
+    VolumeFusion(int sidelog, float unitsPerVoxel);
     ~VolumeFusion();
     
     void update(const Measurement& measurement, const float* T);
@@ -96,6 +96,7 @@ public:
     float getMaximumDistanceTo(const float* point) const;
     
     inline int getSide() const {return mSide;}
+    inline int getSideLog() const {return mSideLog;}
     inline float getUnitsPerVoxel() const {return mUnitsPerVoxel;}
     
     inline const float* getFGpu() const {return mFGpu;}
