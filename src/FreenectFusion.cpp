@@ -347,7 +347,8 @@ void Tracker::solveSystem(float* incT, const float* AA, const float* Ab)
 
 FreenectFusion::FreenectFusion(int width, int height,
                         const double* Kdepth, const double* Krgb)
-    : mWidth(width), mHeight(height), mActiveTracking(false)
+    : mWidth(width), mHeight(height), mActiveTracking(false),
+    mActiveUpdate(true)
 {
     static const float initLocation[16] = {1.f, 0.f, 0.f, 0.f,
                                            0.f, 1.f, 0.f, 0.f,
@@ -373,7 +374,10 @@ FreenectFusion::~FreenectFusion()
 void FreenectFusion::update(void* depth)
 {
     mMeasurement->setDepth((uint16_t*)depth);
-    mVolume->update(*mMeasurement, mLocation);
+    
+    if(mActiveUpdate)
+        mVolume->update(*mMeasurement, mLocation);
+    
     mVolumeMeasurement->measure(*mVolume, mLocation);
     if(mActiveTracking)
     {

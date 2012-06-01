@@ -166,6 +166,7 @@ private:
     float mLocation[16];
     
     bool mActiveTracking;
+    bool mActiveUpdate;
     
 public:
     FreenectFusion(int width, int height,
@@ -179,6 +180,10 @@ public:
     inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
     inline MarchingCubes* getMarchingCubes() const {return mMC;}
     inline const float* getLocation() const {return mLocation;}
+    
+    inline void toggleUpdate() {mActiveUpdate ^= 1;}
+    inline void setUpdate(bool on) {mActiveUpdate = on;}
+    inline bool isUpdating() const {return mActiveUpdate;}
     
     inline void toggleTracking() {mActiveTracking ^= 1;}
     inline void setTracking(bool on) {mActiveTracking = on;}
