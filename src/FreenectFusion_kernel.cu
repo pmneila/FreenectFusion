@@ -343,8 +343,8 @@ void Measurement::setDepth(uint16_t* depth)
     
     depth_texture.normalized = false;
     depth_texture.filterMode = cudaFilterModePoint;
-    depth_texture.addressMode[0] = cudaAddressModeClamp;
-    depth_texture.addressMode[1] = cudaAddressModeClamp;
+    depth_texture.addressMode[0] = cudaAddressModeBorder;
+    depth_texture.addressMode[1] = cudaAddressModeBorder;
     
     cudaSafeCall(cudaMemcpyToSymbol(invK, mKdepth->getInverse(), sizeof(float)*9));
     
