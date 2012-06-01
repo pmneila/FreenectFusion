@@ -1,6 +1,7 @@
 
 #include "DemoBase.h"
 #include "FreenectFusion.h"
+#include "MarchingCubes.h"
 
 #include "glheaders.h"
 
@@ -76,6 +77,7 @@ class Viewer : public DemoBase
 private:
     GLuint mTexture;
     FreenectFusion* mFfusion;
+    MarchingCubes* mMC;
     double Krgb[9], Kdepth[9], T[16];
     
     bool mDrawFlags[3];
@@ -143,12 +145,13 @@ public:
     ~Viewer()
     {
         delete mFfusion;
+        delete mMC;
     }
     
 protected:
     void display()
     {
-        void* image = 0;
+        /*void* image = 0;
         void* depth = 0;
         float aux[16];
         uint32_t timestamp;
@@ -189,7 +192,17 @@ protected:
         }
         
         drawBoundingBox();
-        drawSensor();
+        drawSensor();*/
+        mMC->computeMC();
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
+        
+        glPointSize(5);
+        glBindBuffer(GL_ARRAY_BUFFER, mMC->getGLVertexBuffer());
+        glVertexPointer(4, GL_FLOAT, 4*sizeof(float), 0);
+        glBindBuffer(GL_ARRAY_BUFFER, mMC->getGLNormalBuffer());
+        glColorPointer(4, GL_FLOAT, 4*sizeof(float), 0);
+        glDrawArrays(GL_TRIANGLES, 0, mMC->getActiveVertices());
     }
     
     void initGl(int width, int height)
@@ -203,7 +216,8 @@ protected:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexImage2D(GL_TEXTURE_2D, 0, 1, 640, 480, 0, GL_LUMINANCE, GL_FLOAT, 0);
         
-        mFfusion = new FreenectFusion(640, 480, Kdepth, Krgb);
+        //mFfusion = new FreenectFusion(640, 480, Kdepth, Krgb);
+        mMC = new MarchingCubes(6);
     }
     
     void keyboardPressEvent(unsigned char key, int x, int y)

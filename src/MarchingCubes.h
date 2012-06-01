@@ -31,25 +31,31 @@ private:
     int mSideLog, mSide;
     int mNumVoxels, mMaxVertices;
     uint3 mGridSize, mGridSizeMask, mGridSizeShift;
-    int mActiveVoxels, mTotalVertices;
+    int mActiveVoxels, mActiveVertices;
     
     const float* mVolumeGpu;
     unsigned int* mVoxelVertsGpu;
     unsigned int* mVoxelVertsScanGpu;
     unsigned int* mVoxelOccupiedGpu;
-    //unsigned int* mVoxelOccupiedScanGpu;
-    //unsigned int* mCompVoxelArrayGpu;
+    unsigned int* mVoxelOccupiedScanGpu;
+    unsigned int* mCompVoxelArrayGpu;
     
     unsigned int mVertexBuffer, mNormalBuffer;
     
     void bindVolumeTexture();
     void classifyVoxels(float isovalue);
+    void compactVoxels();
+    void generateTriangles(float isovalue);
     
 public:
-    MarchingCubes(VolumeFusion* volume);
+    MarchingCubes(int sidelog);
     ~MarchingCubes();
     
     void computeMC(float isovalue=0.f);
+    
+    inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
+    inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
+    inline int getActiveVertices() const {return mActiveVertices;}
 };
 
 #endif // _MARCHINGCUBES_H

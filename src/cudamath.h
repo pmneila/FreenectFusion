@@ -4,6 +4,16 @@
 
 #include "cudautils.h"
 
+inline __host__ __device__ float4 make_float4(float3 a, float w)
+{
+    return make_float4(a.x, a.y, a.z, w);
+}
+
+inline __host__ __device__ float3 make_float3(float w)
+{
+    return make_float3(w, w, w);
+}
+
 inline __device__ uint3 operator+(const uint3& a, const uint3& b)
 {
     return make_uint3(a.x+b.x, a.y+b.y, a.z+b.z);
@@ -37,6 +47,16 @@ inline __device__ float3 operator-(float3 a, float3 b)
 inline __device__ float3 operator*(float s, float3 a)
 {
     return make_float3(a.x * s, a.y * s, a.z * s);
+}
+
+inline __device__ __host__ float lerp(float a, float b, float t)
+{
+    return a + t*(b-a);
+}
+
+inline __device__ __host__ float3 lerp(float3 a, float3 b, float t)
+{
+    return a + t*(b-a);
 }
 
 __device__ float3 transform3(const float* matrix, float3 v);

@@ -9,8 +9,15 @@
 #include <thrust/device_vector.h>
 
 #include <stdexcept>
+#include <cmath>
 
 MarchingCubesTextures* MarchingCubesTextures::instance = 0;
+
+MarchingCubesTextures* MarchingCubesTextures::getInstance()
+{
+    static MarchingCubesTextures instance;
+    return MarchingCubesTextures::instance;
+}
 
 MarchingCubesTextures::MarchingCubesTextures()
 {
@@ -28,15 +35,31 @@ MarchingCubesTextures::~MarchingCubesTextures()
     cudaSafeCall(cudaFree(mNumVertsTableGpu));
 }
 
-MarchingCubes::MarchingCubes(VolumeFusion* volume)
-    : mSideLog(volume->getSideLog()),
-    mSide(volume->getSide()), mVolumeGpu(volume->getFGpu()),
+MarchingCubes::MarchingCubes(int sidelog)
+    : mSideLog(sidelog), mSide(1<< sidelog),
+    //mSideLog(volume->getSideLog()),
+    //mSide(volume->getSide()), mVolumeGpu(volume->getFGpu()),
     mGridSize(make_uint3(mSide, mSide, mSide)),
     mGridSizeMask(make_uint3(mGridSize.x-1, mGridSize.y-1, mGridSize.z-1)),
     mGridSizeShift(make_uint3(0, mSideLog, mSideLog+mSideLog)),
     mNumVoxels(mSide*mSide*mSide), mMaxVertices(mSide*mSide*100),
-    mActiveVoxels(0), mTotalVertices(0)
+    mActiveVoxels(0), mActiveVertices(0)
 {
+    // Make sure that a MarchingCubesTextures instance exists.
+    MarchingCubesTextures::getInstance();
+    
+    float half = mSide / 2.f;
+    float* aux = new float[mNumVoxels];
+    for(int k=0; k<mSide; ++k)
+        for(int j=0; j<mSide; ++j)
+            for(int i=0; i<mSide; ++i)
+            {
+                aux[k*mSide*mSide + j*mSide + i] = std::sqrt((i-half)*(i-half) + (j-half)*(j-half) + (k-half)*(k-half)) - 20;
+            }
+    
+    cudaSafeCall(cudaMalloc((void**)&mVolumeGpu, sizeof(float)*mNumVoxels));
+    cudaSafeCall(cudaMemcpy((void*)mVolumeGpu, aux, sizeof(float)*mNumVoxels, cudaMemcpyHostToDevice));
+    
     // Allocate vertex and normal buffers.
     glGenBuffers(1, &mVertexBuffer);
     glGenBuffers(1, &mNormalBuffer);
@@ -52,6 +75,8 @@ MarchingCubes::MarchingCubes(VolumeFusion* volume)
     cudaSafeCall(cudaMalloc((void**)&mVoxelVertsGpu, memsize));
     cudaSafeCall(cudaMalloc((void**)&mVoxelVertsScanGpu, memsize));
     cudaSafeCall(cudaMalloc((void**)&mVoxelOccupiedGpu, memsize));
+    cudaSafeCall(cudaMalloc((void**)&mVoxelOccupiedScanGpu, memsize));
+    cudaSafeCall(cudaMalloc((void**)&mCompVoxelArrayGpu, memsize));
 }
 
 MarchingCubes::~MarchingCubes()
@@ -66,15 +91,26 @@ MarchingCubes::~MarchingCubes()
     cudaSafeCall(cudaFree(mVoxelVertsGpu));
     cudaSafeCall(cudaFree(mVoxelVertsScanGpu));
     cudaSafeCall(cudaFree(mVoxelOccupiedGpu));
+    cudaSafeCall(cudaFree(mVoxelOccupiedScanGpu));
+    cudaSafeCall(cudaFree(mCompVoxelArrayGpu));
+    cudaSafeCall(cudaFree((void*)mVolumeGpu));
 }
 
 void MarchingCubes::computeMC(float isovalue)
 {
     bindVolumeTexture();
     classifyVoxels(isovalue);
+    
+    thrustScanWrapper(mVoxelOccupiedScanGpu, mVoxelOccupiedGpu, mNumVoxels);
+    mActiveVoxels = thrust::device_ptr<unsigned int>(mVoxelOccupiedScanGpu)[mNumVoxels-1]
+                     + thrust::device_ptr<unsigned int>(mVoxelOccupiedGpu)[mNumVoxels-1];
+    
+    compactVoxels();
+    
     thrustScanWrapper(mVoxelVertsScanGpu, mVoxelVertsGpu, mNumVoxels);
     
-    mTotalVertices = thrust::device_ptr<unsigned int>(mVoxelVertsScanGpu)[mNumVoxels-1]
+    mActiveVertices = thrust::device_ptr<unsigned int>(mVoxelVertsScanGpu)[mNumVoxels-1]
                      + thrust::device_ptr<unsigned int>(mVoxelVertsGpu)[mNumVoxels-1];
-    std::cout << mTotalVertices << std::endl;
+    
+    generateTriangles(isovalue);
 }
