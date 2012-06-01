@@ -32,6 +32,7 @@ private:
     int mNumVoxels, mMaxVertices;
     uint3 mGridSize, mGridSizeMask, mGridSizeShift;
     int mActiveVoxels, mActiveVertices;
+    float mUnitsPerVoxel;
     
     const float* mVolumeGpu;
     unsigned int* mVoxelVertsGpu;
@@ -48,7 +49,7 @@ private:
     void generateTriangles(float isovalue);
     
 public:
-    MarchingCubes(int sidelog);
+    MarchingCubes(VolumeFusion* volume);
     ~MarchingCubes();
     
     void computeMC(float isovalue=0.f);

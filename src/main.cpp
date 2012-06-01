@@ -138,7 +138,7 @@ public:
     {
         read_calib_file(Krgb, Kdepth, T, calib_filename);
         mDrawFlags[0] = true;
-        mDrawFlags[1] = true;
+        mDrawFlags[1] = false;
         mDrawFlags[2] = false;
     }
     
@@ -151,7 +151,7 @@ public:
 protected:
     void display()
     {
-        /*void* image = 0;
+        void* image = 0;
         void* depth = 0;
         float aux[16];
         uint32_t timestamp;
@@ -192,17 +192,21 @@ protected:
         }
         
         drawBoundingBox();
-        drawSensor();*/
-        mMC->computeMC();
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glEnableClientState(GL_COLOR_ARRAY);
+        drawSensor();
         
-        glPointSize(5);
-        glBindBuffer(GL_ARRAY_BUFFER, mMC->getGLVertexBuffer());
-        glVertexPointer(4, GL_FLOAT, 4*sizeof(float), 0);
-        glBindBuffer(GL_ARRAY_BUFFER, mMC->getGLNormalBuffer());
-        glColorPointer(4, GL_FLOAT, 4*sizeof(float), 0);
-        glDrawArrays(GL_TRIANGLES, 0, mMC->getActiveVertices());
+        /*mMC->computeMC();
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);*/
+        
+        if(mDrawFlags[0])
+        {
+            MarchingCubes* mc = mFfusion->getMarchingCubes();
+            glBindBuffer(GL_ARRAY_BUFFER, mc->getGLVertexBuffer());
+            glVertexPointer(4, GL_FLOAT, 4*sizeof(float), 0);
+            glBindBuffer(GL_ARRAY_BUFFER, mc->getGLNormalBuffer());
+            glColorPointer(4, GL_FLOAT, 4*sizeof(float), 0);
+            glDrawArrays(GL_TRIANGLES, 0, mc->getActiveVertices());
+        }
     }
     
     void initGl(int width, int height)
@@ -216,8 +220,8 @@ protected:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexImage2D(GL_TEXTURE_2D, 0, 1, 640, 480, 0, GL_LUMINANCE, GL_FLOAT, 0);
         
-        //mFfusion = new FreenectFusion(640, 480, Kdepth, Krgb);
-        mMC = new MarchingCubes(6);
+        mFfusion = new FreenectFusion(640, 480, Kdepth, Krgb);
+        //mMC = new MarchingCubes(7);
     }
     
     void keyboardPressEvent(unsigned char key, int x, int y)

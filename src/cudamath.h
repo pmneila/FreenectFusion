@@ -14,6 +14,11 @@ inline __host__ __device__ float3 make_float3(float w)
     return make_float3(w, w, w);
 }
 
+inline __host__ __device__ float3 make_float3(uint3 a)
+{
+    return make_float3(a.x, a.y, a.z);
+}
+
 inline __device__ uint3 operator+(const uint3& a, const uint3& b)
 {
     return make_uint3(a.x+b.x, a.y+b.y, a.z+b.z);
@@ -49,6 +54,11 @@ inline __device__ float3 operator*(float s, float3 a)
     return make_float3(a.x * s, a.y * s, a.z * s);
 }
 
+inline __device__ float3 operator*(float3 a, float3 b)
+{
+    return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
 inline __device__ __host__ float lerp(float a, float b, float t)
 {
     return a + t*(b-a);
@@ -62,11 +72,16 @@ inline __device__ __host__ float3 lerp(float3 a, float3 b, float t)
 __device__ float3 transform3(const float* matrix, float3 v);
 __device__ float3 transform3_affine(const float* matrix, float3 v);
 __device__ float3 transform3_affine_inverse(const float* matrix, float3 v);
-__device__ float3 normalize(float3 v);
 
 inline __device__ float length(const float3& v)
 {
     return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+}
+
+inline __device__ float3 normalize(float3 v)
+{
+    float invLen = 1.0f / length(v);
+    return invLen * v;
 }
 
 #endif // _CUDAMATH_H

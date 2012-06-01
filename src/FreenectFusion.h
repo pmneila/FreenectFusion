@@ -151,6 +151,8 @@ public:
     inline const float* getTrackTransform() const {return mTrackTransform;}
 };
 
+class MarchingCubes;
+
 class FreenectFusion
 {
 private:
@@ -159,6 +161,8 @@ private:
     VolumeFusion* mVolume;
     VolumeMeasurement* mVolumeMeasurement;
     Tracker* mTracker;
+    MarchingCubes* mMC;
+    
     float mLocation[16];
     
     bool mActiveTracking;
@@ -173,6 +177,7 @@ public:
     inline Measurement* getMeasurement() const {return mMeasurement;}
     inline VolumeFusion* getVolume() const {return mVolume;}
     inline VolumeMeasurement* getVolumeMeasurement() const {return mVolumeMeasurement;}
+    inline MarchingCubes* getMarchingCubes() const {return mMC;}
     inline const float* getLocation() const {return mLocation;}
     
     inline void toggleTracking() {mActiveTracking ^= 1;}

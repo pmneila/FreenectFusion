@@ -72,14 +72,14 @@ classifyVoxel(uint* voxelVerts, uint *voxelOccupied,
     
     // calculate flag indicating if each vertex is inside or outside isosurface
     uint cubeindex;
-	cubeindex =  uint(field[0] < isoValue); 
-	cubeindex += uint(field[1] < isoValue)*2; 
-	cubeindex += uint(field[2] < isoValue)*4; 
-	cubeindex += uint(field[3] < isoValue)*8; 
-	cubeindex += uint(field[4] < isoValue)*16; 
-	cubeindex += uint(field[5] < isoValue)*32; 
-	cubeindex += uint(field[6] < isoValue)*64; 
-	cubeindex += uint(field[7] < isoValue)*128;
+    cubeindex =  uint(field[0] < isoValue); 
+    cubeindex += uint(field[1] < isoValue)*2; 
+    cubeindex += uint(field[2] < isoValue)*4; 
+    cubeindex += uint(field[3] < isoValue)*8; 
+    cubeindex += uint(field[4] < isoValue)*16; 
+    cubeindex += uint(field[5] < isoValue)*32; 
+    cubeindex += uint(field[6] < isoValue)*64; 
+    cubeindex += uint(field[7] < isoValue)*128;
     
     // read number of vertices from texture
     uint numVerts = tex1Dfetch(numVertsTex, cubeindex);
@@ -129,7 +129,7 @@ float3 calcNormal(float3 *v0, float3 *v1, float3 *v2)
     float3 edge0 = *v1 - *v0;
     float3 edge1 = *v2 - *v0;
     // note - it's faster to perform normalization in vertex shader rather than here
-    return cross(edge0, edge1);
+    return normalize(cross(edge0, edge1));
 }
 
 #define USE_SHARED 1
@@ -158,10 +158,14 @@ generateTriangles(float4 *pos, float4 *norm, uint *compactedVoxelArray, uint *nu
     uint3 gridPos = calcGridPos(voxel, gridSizeShift, gridSizeMask);
 
     float3 p;
-    p.x = -1.0f + (gridPos.x * voxelSize.x);
-    p.y = -1.0f + (gridPos.y * voxelSize.y);
-    p.z = -1.0f + (gridPos.z * voxelSize.z);
-
+    //p.x = /*-1.0f +*/ ((gridPos.x - gridSize.x/2) * voxelSize.x);
+    //p.y = /*-1.0f +*/ ((gridPos.y - gridSize.y/2) * voxelSize.y);
+    //p.z = /*-1.0f +*/ ((gridPos.z - gridSize.z/2) * voxelSize.z);
+    p.x = /*-1.0f +*/ ((gridPos.x) * voxelSize.x);
+    p.y = /*-1.0f +*/ ((gridPos.y) * voxelSize.y);
+    p.z = /*-1.0f +*/ ((gridPos.z) * voxelSize.z);
+    p = p - (0.5f*make_float3(gridSize) * voxelSize);
+    
     // calculate cell vertex positions
     float3 v[8];
     v[0] = p;
@@ -185,49 +189,49 @@ generateTriangles(float4 *pos, float4 *norm, uint *compactedVoxelArray, uint *nu
     
     // recalculate flag
     uint cubeindex;
-	cubeindex =  uint(field[0] < isoValue); 
-	cubeindex += uint(field[1] < isoValue)*2; 
-	cubeindex += uint(field[2] < isoValue)*4; 
-	cubeindex += uint(field[3] < isoValue)*8; 
-	cubeindex += uint(field[4] < isoValue)*16; 
-	cubeindex += uint(field[5] < isoValue)*32; 
-	cubeindex += uint(field[6] < isoValue)*64; 
-	cubeindex += uint(field[7] < isoValue)*128;
+    cubeindex =  uint(field[0] < isoValue); 
+    cubeindex += uint(field[1] < isoValue)*2; 
+    cubeindex += uint(field[2] < isoValue)*4; 
+    cubeindex += uint(field[3] < isoValue)*8; 
+    cubeindex += uint(field[4] < isoValue)*16; 
+    cubeindex += uint(field[5] < isoValue)*32; 
+    cubeindex += uint(field[6] < isoValue)*64; 
+    cubeindex += uint(field[7] < isoValue)*128;
     
-	// find the vertices where the surface intersects the cube 
+    // find the vertices where the surface intersects the cube 
     
 #if USE_SHARED
     // use shared memory to avoid using local
-	__shared__ float3 vertlist[12*NTHREADS];
+    __shared__ float3 vertlist[12*NTHREADS];
 
-	vertlist[threadIdx.x] = vertexInterp(isoValue, v[0], v[1], field[0], field[1]);
+    vertlist[threadIdx.x] = vertexInterp(isoValue, v[0], v[1], field[0], field[1]);
     vertlist[NTHREADS+threadIdx.x] = vertexInterp(isoValue, v[1], v[2], field[1], field[2]);
     vertlist[(NTHREADS*2)+threadIdx.x] = vertexInterp(isoValue, v[2], v[3], field[2], field[3]);
     vertlist[(NTHREADS*3)+threadIdx.x] = vertexInterp(isoValue, v[3], v[0], field[3], field[0]);
-	vertlist[(NTHREADS*4)+threadIdx.x] = vertexInterp(isoValue, v[4], v[5], field[4], field[5]);
+    vertlist[(NTHREADS*4)+threadIdx.x] = vertexInterp(isoValue, v[4], v[5], field[4], field[5]);
     vertlist[(NTHREADS*5)+threadIdx.x] = vertexInterp(isoValue, v[5], v[6], field[5], field[6]);
     vertlist[(NTHREADS*6)+threadIdx.x] = vertexInterp(isoValue, v[6], v[7], field[6], field[7]);
     vertlist[(NTHREADS*7)+threadIdx.x] = vertexInterp(isoValue, v[7], v[4], field[7], field[4]);
-	vertlist[(NTHREADS*8)+threadIdx.x] = vertexInterp(isoValue, v[0], v[4], field[0], field[4]);
+    vertlist[(NTHREADS*8)+threadIdx.x] = vertexInterp(isoValue, v[0], v[4], field[0], field[4]);
     vertlist[(NTHREADS*9)+threadIdx.x] = vertexInterp(isoValue, v[1], v[5], field[1], field[5]);
     vertlist[(NTHREADS*10)+threadIdx.x] = vertexInterp(isoValue, v[2], v[6], field[2], field[6]);
     vertlist[(NTHREADS*11)+threadIdx.x] = vertexInterp(isoValue, v[3], v[7], field[3], field[7]);
     __syncthreads();
 #else
     
-	float3 vertlist[12];
+    float3 vertlist[12];
     
     vertlist[0] = vertexInterp(isoValue, v[0], v[1], field[0], field[1]);
     vertlist[1] = vertexInterp(isoValue, v[1], v[2], field[1], field[2]);
     vertlist[2] = vertexInterp(isoValue, v[2], v[3], field[2], field[3]);
     vertlist[3] = vertexInterp(isoValue, v[3], v[0], field[3], field[0]);
     
-	vertlist[4] = vertexInterp(isoValue, v[4], v[5], field[4], field[5]);
+    vertlist[4] = vertexInterp(isoValue, v[4], v[5], field[4], field[5]);
     vertlist[5] = vertexInterp(isoValue, v[5], v[6], field[5], field[6]);
     vertlist[6] = vertexInterp(isoValue, v[6], v[7], field[6], field[7]);
     vertlist[7] = vertexInterp(isoValue, v[7], v[4], field[7], field[4]);
     
-	vertlist[8] = vertexInterp(isoValue, v[0], v[4], field[0], field[4]);
+    vertlist[8] = vertexInterp(isoValue, v[0], v[4], field[0], field[4]);
     vertlist[9] = vertexInterp(isoValue, v[1], v[5], field[1], field[5]);
     vertlist[10] = vertexInterp(isoValue, v[2], v[6], field[2], field[6]);
     vertlist[11] = vertexInterp(isoValue, v[3], v[7], field[3], field[7]);
@@ -343,7 +347,7 @@ void MarchingCubes::generateTriangles(float isovalue)
     cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
     ::generateTriangles<<<grid,threads>>>(vertices, normals, mCompVoxelArrayGpu, mVoxelVertsScanGpu,
                             mGridSize, mGridSizeShift, mGridSizeMask,
-                            make_float3(2.f), isovalue, mActiveVoxels, mMaxVertices);
+                            make_float3(mUnitsPerVoxel), isovalue, mActiveVoxels, mMaxVertices);
     
     cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);

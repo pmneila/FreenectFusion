@@ -1,6 +1,7 @@
 
 #include "FreenectFusion.h"
 
+#include "MarchingCubes.h"
 #include "glheaders.h"
 #include "cudautils.h"
 
@@ -280,7 +281,7 @@ void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
     cudaGLMapBufferObject((void**)&verticesVolume, volMeas.getGLVertexBuffer());
     cudaGLMapBufferObject((void**)&normalsVolume, volMeas.getGLNormalBuffer());
     
-    for(int i=0; i<3; ++i)
+    for(int i=0; i<5; ++i)
     {
         if(i!=0)
             multiplyTransforms(current2InitT, initTinv, currentT);
@@ -357,6 +358,7 @@ FreenectFusion::FreenectFusion(int width, int height,
     mVolume = new VolumeFusion(7, 7.8125f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     mTracker = new Tracker(width*height);
+    mMC = new MarchingCubes(mVolume);
     std::copy(initLocation, initLocation+16, mLocation);
 }
 
@@ -379,4 +381,5 @@ void FreenectFusion::update(void* depth)
         const float* newT = mTracker->getTrackTransform();
         std::copy(newT, newT+16, mLocation);
     }
+    mMC->computeMC();
 }

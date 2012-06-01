@@ -44,12 +44,6 @@ __device__ float3 transform3_affine_inverse(const float* matrix, float3 v)
     return res;
 }
 
-__device__ float3 normalize(float3 v)
-{
-    float invLen = 1.0f / length(v);
-    return invLen * v;
-}
-
 __device__ float gaussian(float t, float sigma)
 {
     return exp(-t*t/(sigma*sigma));
@@ -185,7 +179,7 @@ __global__ void update_reconstruction(float* F, float* W,
         *current_F = F_rk;
     else
         *current_F = (*current_W * *current_F + W_rk * F_rk)/(*current_W + W_rk);
-    *current_W = min(*current_W + W_rk, 10.f);
+    *current_W = min(*current_W + W_rk, 100.f);
 }
 
 __global__ void raycast(float3* vertices, float3* normals,

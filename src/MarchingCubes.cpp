@@ -3,6 +3,7 @@
 
 #include "FreenectFusion.h"
 
+#include "glheaders.h"
 #include "cudautils.h"
 #include <cuda_runtime_api.h>
 #include <cuda_gl_interop.h>
@@ -35,10 +36,11 @@ MarchingCubesTextures::~MarchingCubesTextures()
     cudaSafeCall(cudaFree(mNumVertsTableGpu));
 }
 
-MarchingCubes::MarchingCubes(int sidelog)
-    : mSideLog(sidelog), mSide(1<< sidelog),
-    //mSideLog(volume->getSideLog()),
-    //mSide(volume->getSide()), mVolumeGpu(volume->getFGpu()),
+MarchingCubes::MarchingCubes(/*int sidelog*/VolumeFusion* volume)
+    : //mSideLog(sidelog), mSide(1<< sidelog),
+    mSideLog(volume->getSideLog()),
+    mSide(volume->getSide()), mVolumeGpu(volume->getFGpu()),
+    mUnitsPerVoxel(volume->getUnitsPerVoxel()),
     mGridSize(make_uint3(mSide, mSide, mSide)),
     mGridSizeMask(make_uint3(mGridSize.x-1, mGridSize.y-1, mGridSize.z-1)),
     mGridSizeShift(make_uint3(0, mSideLog, mSideLog+mSideLog)),
@@ -48,17 +50,17 @@ MarchingCubes::MarchingCubes(int sidelog)
     // Make sure that a MarchingCubesTextures instance exists.
     MarchingCubesTextures::getInstance();
     
-    float half = mSide / 2.f;
-    float* aux = new float[mNumVoxels];
-    for(int k=0; k<mSide; ++k)
-        for(int j=0; j<mSide; ++j)
-            for(int i=0; i<mSide; ++i)
-            {
-                aux[k*mSide*mSide + j*mSide + i] = std::sqrt((i-half)*(i-half) + (j-half)*(j-half) + (k-half)*(k-half)) - 20;
-            }
-    
-    cudaSafeCall(cudaMalloc((void**)&mVolumeGpu, sizeof(float)*mNumVoxels));
-    cudaSafeCall(cudaMemcpy((void*)mVolumeGpu, aux, sizeof(float)*mNumVoxels, cudaMemcpyHostToDevice));
+//     float half = mSide / 2.f;
+//     float* aux = new float[mNumVoxels];
+//     for(int k=0; k<mSide; ++k)
+//         for(int j=0; j<mSide; ++j)
+//             for(int i=0; i<mSide; ++i)
+//             {
+//                 aux[k*mSide*mSide + j*mSide + i] = std::sqrt((i-half)*(i-half) + (j-half)*(j-half) + (k-half)*(k-half)) - 20;
+//             }
+//     
+//     cudaSafeCall(cudaMalloc((void**)&mVolumeGpu, sizeof(float)*mNumVoxels));
+//     cudaSafeCall(cudaMemcpy((void*)mVolumeGpu, aux, sizeof(float)*mNumVoxels, cudaMemcpyHostToDevice));
     
     // Allocate vertex and normal buffers.
     glGenBuffers(1, &mVertexBuffer);
