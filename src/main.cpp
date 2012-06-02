@@ -77,7 +77,6 @@ class Viewer : public DemoBase
 private:
     GLuint mTexture;
     FreenectFusion* mFfusion;
-    MarchingCubes* mMC;
     double Krgb[9], Kdepth[9], T[16];
     
     bool mDrawFlags[3];
@@ -145,7 +144,6 @@ public:
     ~Viewer()
     {
         delete mFfusion;
-        delete mMC;
     }
     
 protected:
@@ -194,11 +192,7 @@ protected:
         drawBoundingBox();
         drawSensor();
         
-        /*mMC->computeMC();
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glEnableClientState(GL_COLOR_ARRAY);*/
-        
-        if(mDrawFlags[0])
+        /*if(mDrawFlags[0])
         {
             MarchingCubes* mc = mFfusion->getMarchingCubes();
             glBindBuffer(GL_ARRAY_BUFFER, mc->getGLVertexBuffer());
@@ -206,7 +200,7 @@ protected:
             glBindBuffer(GL_ARRAY_BUFFER, mc->getGLNormalBuffer());
             glColorPointer(4, GL_FLOAT, 4*sizeof(float), 0);
             glDrawArrays(GL_TRIANGLES, 0, mc->getActiveVertices());
-        }
+        }*/
     }
     
     void initGl(int width, int height)
@@ -221,7 +215,6 @@ protected:
         glTexImage2D(GL_TEXTURE_2D, 0, 1, 640, 480, 0, GL_LUMINANCE, GL_FLOAT, 0);
         
         mFfusion = new FreenectFusion(640, 480, Kdepth, Krgb);
-        //mMC = new MarchingCubes(7);
     }
     
     void keyboardPressEvent(unsigned char key, int x, int y)

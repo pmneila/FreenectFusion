@@ -31,7 +31,6 @@ float sampleVolume(uint3 p, uint3 gridSize)
     p.y = min(p.y, gridSize.y - 1);
     p.z = min(p.z, gridSize.z - 1);
     uint i = (p.z*gridSize.x*gridSize.y) + (p.y*gridSize.x) + p.x;
-//    return (float) data[i] / 255.0f;
     return tex1Dfetch(volumeTex, i);
 }
 

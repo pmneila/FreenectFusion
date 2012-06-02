@@ -63,25 +63,6 @@ __host__ __device__ float3 worldToGrid(float3 p, int side, float units_per_voxel
                         p.z/units_per_voxel + side/2);
 }
 
-__global__ void compute_depth_2(float* depth, int width, int height, size_t pitch)
-{
-    int x = blockDim.x * blockIdx.x + threadIdx.x;
-    int y = blockDim.y * blockIdx.y + threadIdx.y;
-    
-    if(x >= width || y >= height)
-        return;
-    
-    float* row = (float*)((char*)depth + y * pitch);
-    
-    if(row[x] == 2047)
-    {
-        row[x] = 0.f;
-        return;
-    }
-    
-    row[x] = 1000.f / (row[x] * -0.0030711016f + 3.3309495161f);
-}
-
 __global__ void compute_smooth_depth(float* smooth_depth,
                         int width, int height, size_t pitch,
                         float sigma1, float sigma2)
@@ -101,15 +82,24 @@ __global__ void compute_smooth_depth(float* smooth_depth,
         for(int j=-5; j<=5; ++j)
         {
             float depth2 = tex2D(depth_texture, x+i, y+j);
-            float distance1 = length2(make_float2(i,j));
-            float distance2 = depth1 - depth2;
-            float weight1 = gaussian(distance1, sigma1);
-            float weight2 = gaussian(distance2, sigma2);
+            float weight1 = gaussian(length2(make_float2(i,j)), sigma1);
+            float weight2 = gaussian(depth1 - depth2, sigma2);
             weight_cum += weight1 * weight2;
-            cum += depth1 * weight1 * weight2;
+            cum += depth2 * weight1 * weight2;
         }
     cum /= weight_cum;
     *current_smooth_depth = cum;
+}
+
+__global__ void pyrdownSmoothDepth(float* output, int width, int height)
+{
+    int x = blockDim.x * blockIdx.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+    
+    if(x >= width || y >= height)
+        return;
+    
+    
 }
 
 /**
@@ -131,10 +121,10 @@ __global__ void measure(float3* vertices, float3* normals, int* mask,
     float3 u = make_float3(float(x), float(y), 1.f);
     float3 v = make_float3(float(x+1), float(y), 1.f);
     float3 w = make_float3(float(x), float(y+1), 1.f);
-    float depth = tex2D(depth_texture, x, y);
+    float depth = tex2D(smooth_depth_texture, x, y);
     u = depth * transform3(invK, u);
-    v = tex2D(depth_texture, x+1, y) * transform3(invK, v);
-    w = tex2D(depth_texture, x, y+1) * transform3(invK, w);
+    v = tex2D(smooth_depth_texture, x+1, y) * transform3(invK, v);
+    w = tex2D(smooth_depth_texture, x, y+1) * transform3(invK, w);
     
     float3 n = normalize(cross(v - u, w - u));
     *current_vertex = u;
@@ -179,7 +169,7 @@ __global__ void update_reconstruction(float* F, float* W,
         *current_F = F_rk;
     else
         *current_F = (*current_W * *current_F + W_rk * F_rk)/(*current_W + W_rk);
-    *current_W = min(*current_W + W_rk, 100.f);
+    *current_W = min(*current_W + W_rk, 20.f);
 }
 
 __global__ void raycast(float3* vertices, float3* normals,
@@ -330,6 +320,7 @@ struct transform_depth
 
 void Measurement::setDepth(uint16_t* depth)
 {
+    // Convert raw depth to milimeters.
     cudaSafeCall(cudaMemcpy(mRawDepthGpu, depth, sizeof(uint16_t)*mNumVertices,
             cudaMemcpyHostToDevice));
     thrust::transform(thrust::device_ptr<uint16_t>(mRawDepthGpu),
@@ -337,6 +328,7 @@ void Measurement::setDepth(uint16_t* depth)
                       thrust::device_ptr<float>(mDepthGpu),
                       transform_depth());
     
+    // Bind the depth into a texture for fast access.
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
     cudaSafeCall(cudaBindTexture2D(0, &depth_texture, mDepthGpu, &channelDesc,
                     mWidth, mHeight, mWidth*sizeof(float)));
@@ -346,21 +338,40 @@ void Measurement::setDepth(uint16_t* depth)
     depth_texture.addressMode[0] = cudaAddressModeBorder;
     depth_texture.addressMode[1] = cudaAddressModeBorder;
     
+    // Compute a smooth version of the depth map.
+    dim3 grid, block(16,16,1);
+    grid.x = (mWidth-1)/block.x + 1;
+    grid.y = (mHeight-1)/block.y + 1;
+    compute_smooth_depth<<<grid,block>>>(mSmoothDepthGpu, mWidth, mHeight, mWidth*sizeof(float),
+                                        2.f, 20.f);
+    cudaSafeCall(cudaGetLastError());
+    
+    // Bind the smooth depth map into a texture for fast access.
+    cudaSafeCall(cudaBindTexture2D(0, &smooth_depth_texture, mSmoothDepthGpu, &channelDesc,
+                    mWidth, mHeight, mWidth*sizeof(float)));
+    smooth_depth_texture.normalized = false;
+    smooth_depth_texture.filterMode = cudaFilterModePoint;
+    smooth_depth_texture.addressMode[0] = cudaAddressModeBorder;
+    smooth_depth_texture.addressMode[1] = cudaAddressModeBorder;
+    
+    // Determine vertices and normals from the smooth version of the depth map.
     cudaSafeCall(cudaMemcpyToSymbol(invK, mKdepth->getInverse(), sizeof(float)*9));
     
     float3* vertices;
     float3* normals;
     cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
     cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
-    dim3 grid, block(16,16,1);
-    grid.x = (mWidth-1)/block.x + 1;
-    grid.y = (mHeight-1)/block.y + 1;
     measure<<<grid,block>>>(vertices, normals, mMaskGpu,
                             //mKdepth->getInverseGpu(),
                             mWidth, mHeight, mWidth*12);
     cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
+}
+
+void PyramidMeasurement::update()
+{
+    
 }
 
 void VolumeFusion::initBoundingBox()
@@ -392,8 +403,8 @@ void VolumeFusion::update(const Measurement& measurement, const float* T)
     grid.x = grid.y = mSide/block.x;
     grid.z = 1;
     
-    const float* kdepth = measurement.getKdepth()->get();
-    const float* kdepthinv = measurement.getKdepth()->getInverse();
+    const float* kdepth = measurement.getK();
+    const float* kdepthinv = measurement.getKInverse();
     cudaSafeCall(cudaMemcpyToSymbol(K, kdepth, sizeof(float)*9));
     cudaSafeCall(cudaMemcpyToSymbol(invK, kdepthinv, sizeof(float)*9));
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, T, sizeof(float)*16));
@@ -422,7 +433,7 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
     dim3 grid, block(16,16,1);
     grid.x = (mWidth-1)/block.x + 1;
     grid.y = (mHeight-1)/block.y + 1;
-    raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*12,
+    raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*3*sizeof(float),
                             volume.getSide(), volume.getUnitsPerVoxel(), 200.f,
                             mindistance, maxdistance);
     cudaSafeCall(cudaGetLastError());
@@ -488,7 +499,7 @@ void Tracker::trackStep(float* AA, float* Ab, const float* currentT,
     
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
     cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
-    cudaSafeCall(cudaMemcpyToSymbol(K, meas.getKdepth()->get(), sizeof(float)*9));
+    cudaSafeCall(cudaMemcpyToSymbol(K, meas.getK(), sizeof(float)*9));
     // __global__ void compute_tracking_matrices(float* AA, float* Ab,
     //                         float3* vertices_measure, float3* normals_measure,
     //                         float3* vertices_raycast, float3* normals_raycast,

@@ -19,6 +19,16 @@
 
 #define ISPOW2(x) !((x)&((x)-1))
 
+static void invertIntrinsics(float* res, const float* K)
+{
+    std::fill(res, res+9, 0.f);
+    res[0] = 1.0/K[0];
+    res[4] = 1.0/K[4];
+    res[2] = -K[2]/K[0];
+    res[5] = -K[5]/K[4];
+    res[8] = 1.0;
+}
+
 static void invertTransform(float* res, const float* T)
 {
     res[0] = T[0]; res[1] = T[4]; res[2] = T[8];
@@ -97,6 +107,7 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     // Depth related data.
     size_t pitch;
     cudaSafeCall(cudaMallocPitch((void**)&mDepthGpu, &pitch, sizeof(float)*width, height));
+    cudaSafeCall(cudaMallocPitch((void**)&mSmoothDepthGpu, &pitch, sizeof(float)*width, height));
     cudaSafeCall(cudaMallocPitch((void**)&mRawDepthGpu, &pitch, sizeof(uint16_t)*width, height));
     
     mDepth = new float[width * height];
@@ -111,12 +122,14 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     cudaGLRegisterBufferObject(mVertexBuffer);
     cudaGLRegisterBufferObject(mNormalBuffer);
     cudaSafeCall(cudaMallocPitch((void**)&mMaskGpu, &pitch, sizeof(int)*width, height));
+    
 }
 
 Measurement::~Measurement()
 {
     delete mKdepth;
     cudaSafeCall(cudaFree(mDepthGpu));
+    cudaSafeCall(cudaFree(mSmoothDepthGpu));
     cudaSafeCall(cudaFree(mRawDepthGpu));
     delete [] mDepth;
     
@@ -132,6 +145,70 @@ const float* Measurement::getDepthHost() const
     cudaSafeCall(cudaMemcpy(mDepth, mDepthGpu, sizeof(float)*mNumVertices,
             cudaMemcpyDeviceToHost));
     return mDepth;
+}
+
+PyramidMeasurement::PyramidMeasurement(Measurement* parent)
+    : mParent(parent), mParent2(0), mLevel(1)
+{
+    mWidth = mParent->getWidth()>>1;
+    mHeight = mParent->getHeight()>>1;
+    mNumVertices = mWidth * mHeight;
+    std::copy(parent->getK(), parent->getK()+9, mK);
+    
+    initK(0.5f, -0.25f);
+    initBuffers();
+}
+
+PyramidMeasurement::PyramidMeasurement(PyramidMeasurement* parent)
+    : mParent(0), mParent2(parent), mLevel(parent->getLevel()+1)
+{
+    mWidth = mParent2->getWidth()>>1;
+    mHeight = mParent2->getHeight()>>1;
+    mNumVertices = mWidth * mHeight;
+    std::copy(parent->getK(), parent->getK()+9, mK);
+    
+    float a = 1.f/(1<<mLevel);
+    float b = 0.f;
+    for(int i=0; i<mLevel; ++i)
+        b -= 1.f/(1<<(i+2));
+    initK(0.5f, -0.25f);
+    initBuffers();    
+}
+
+void PyramidMeasurement::initK(float a, float b)
+{
+    // Create the new intrinsic matrix.
+    mK[0] *= a;
+    mK[4] *= a;
+    mK[2] = mK[2]*a + b;
+    mK[5] = mK[5]*a + b;
+    // And its inverse.
+    invertIntrinsics(mKInv, mK);
+}
+
+void PyramidMeasurement::initBuffers()
+{
+    // Create the local depth map.
+    cudaSafeCall(cudaMalloc((void**)&mDepthGpu, mNumVertices*sizeof(float)));
+    
+    // Create the vertex and normal buffers.
+    glGenBuffers(1, &mVertexBuffer);
+    glGenBuffers(1, &mNormalBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, mVertexBuffer);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), 0, GL_DYNAMIC_COPY);
+    glBindBuffer(GL_ARRAY_BUFFER, mNormalBuffer);
+    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), 0, GL_DYNAMIC_COPY);
+    cudaGLRegisterBufferObject(mVertexBuffer);
+    cudaGLRegisterBufferObject(mNormalBuffer);
+}
+
+PyramidMeasurement::~PyramidMeasurement()
+{
+    cudaSafeCall(cudaFree(mDepthGpu));
+    cudaSafeCall(cudaGLUnregisterBufferObject(mVertexBuffer));
+    cudaSafeCall(cudaGLUnregisterBufferObject(mNormalBuffer));
+    glDeleteBuffers(1, &mVertexBuffer);
+    glDeleteBuffers(1, &mNormalBuffer);
 }
 
 VolumeFusion::VolumeFusion(int sidelog, float unitsPerVoxel)
@@ -359,7 +436,7 @@ FreenectFusion::FreenectFusion(int width, int height,
     mVolume = new VolumeFusion(7, 7.8125f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     mTracker = new Tracker(width*height);
-    mMC = new MarchingCubes(mVolume);
+    //mMC = new MarchingCubes(mVolume);
     std::copy(initLocation, initLocation+16, mLocation);
 }
 
@@ -369,6 +446,7 @@ FreenectFusion::~FreenectFusion()
     delete mVolume;
     delete mVolumeMeasurement;
     delete mTracker;
+    //delete mMC;
 }
 
 void FreenectFusion::update(void* depth)
@@ -385,5 +463,5 @@ void FreenectFusion::update(void* depth)
         const float* newT = mTracker->getTrackTransform();
         std::copy(newT, newT+16, mLocation);
     }
-    mMC->computeMC();
+    //mMC->computeMC();
 }
