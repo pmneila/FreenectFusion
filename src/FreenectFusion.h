@@ -34,43 +34,7 @@ public:
     inline const float* getInverseGpu() const {return mKinvGpu;}
 };
 
-class Measurement
-{
-private:
-    int mWidth, mHeight, mNumVertices;
-    float* mDepthGpu;
-    float* mSmoothDepthGpu;
-    uint16_t* mRawDepthGpu;
-    mutable float* mDepth;
-    
-    MatrixGpu* mKdepth;
-    
-    unsigned int mVertexBuffer;
-    unsigned int mNormalBuffer;
-    int* mMaskGpu;
-    
-public:
-    Measurement(int width, int height, const double* Kdepth);
-    ~Measurement();
-    
-    void setDepth(uint16_t* depth);
-    
-    inline float* getDepthGpu() {return mDepthGpu;}
-    inline const float* getDepthGpu() const {return mDepthGpu;}
-    inline const float* getSmoothDepthGpu() const {return mSmoothDepthGpu;}
-    const float* getDepthHost() const;
-    
-    inline const int* getMaskGpu() const {return mMaskGpu;}
-    
-    inline const float* getK() const {return mKdepth->get();}
-    inline const float* getKInverse() const {return mKdepth->getInverse();}
-    
-    inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
-    inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
-    
-    inline int getWidth() const {return mWidth;}
-    inline int getHeight() const {return mHeight;}
-};
+class Measurement;
 
 class PyramidMeasurement
 {
@@ -81,6 +45,7 @@ private:
     int mNumVertices;
     int mWidth, mHeight;
     float* mDepthGpu;
+    int* mMaskGpu;
     unsigned int mVertexBuffer;
     unsigned int mNormalBuffer;
     
@@ -100,9 +65,64 @@ public:
     inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
     
+    inline const float* getSmoothDepthGpu() const {return mDepthGpu;}
+    
     inline const float* getK() const {return mK;}
     inline const float* getKInverse() const {return mKInv;}
     inline int getLevel() const {return mLevel;}
+    inline int getWidth() const {return mWidth;}
+    inline int getHeight() const {return mHeight;}
+};
+
+class Measurement
+{
+private:
+    int mWidth, mHeight, mNumVertices;
+    float* mDepthGpu;
+    float* mSmoothDepthGpu;
+    uint16_t* mRawDepthGpu;
+    mutable float* mDepth;
+    
+    MatrixGpu* mKdepth;
+    
+    unsigned int mVertexBuffer;
+    unsigned int mNormalBuffer;
+    int* mMaskGpu;
+    
+    PyramidMeasurement* mPyramid[2];
+    
+public:
+    Measurement(int width, int height, const double* Kdepth);
+    ~Measurement();
+    
+    void setDepth(uint16_t* depth);
+    
+    inline float* getDepthGpu() {return mDepthGpu;}
+    inline const float* getDepthGpu() const {return mDepthGpu;}
+    inline const float* getSmoothDepthGpu() const {return mSmoothDepthGpu;}
+    const float* getDepthHost() const;
+    
+    inline const int* getMaskGpu() const {return mMaskGpu;}
+    
+    inline const float* getK() const {return mKdepth->get();}
+    inline const float* getKInverse() const {return mKdepth->getInverse();}
+    
+    inline unsigned int getGLVertexBuffer(int level=0) const
+    {
+        if(level == 0)
+            return mVertexBuffer;
+        else
+            return mPyramid[level-1]->getGLVertexBuffer();
+    }
+    
+    inline unsigned int getGLNormalBuffer(int level=0) const
+    {
+        if(level == 0)
+            return mNormalBuffer;
+        else
+            return mPyramid[level-1]->getGLNormalBuffer();
+    }
+    
     inline int getWidth() const {return mWidth;}
     inline int getHeight() const {return mHeight;}
 };

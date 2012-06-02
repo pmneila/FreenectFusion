@@ -123,10 +123,15 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     cudaGLRegisterBufferObject(mNormalBuffer);
     cudaSafeCall(cudaMallocPitch((void**)&mMaskGpu, &pitch, sizeof(int)*width, height));
     
+    mPyramid[0] = new PyramidMeasurement(this);
+    mPyramid[1] = new PyramidMeasurement(mPyramid[0]);
 }
 
 Measurement::~Measurement()
 {
+    delete mPyramid[0];
+    delete mPyramid[1];
+    
     delete mKdepth;
     cudaSafeCall(cudaFree(mDepthGpu));
     cudaSafeCall(cudaFree(mSmoothDepthGpu));
@@ -190,6 +195,8 @@ void PyramidMeasurement::initBuffers()
 {
     // Create the local depth map.
     cudaSafeCall(cudaMalloc((void**)&mDepthGpu, mNumVertices*sizeof(float)));
+    // Create the local depth map.
+    cudaSafeCall(cudaMalloc((void**)&mMaskGpu, mNumVertices*sizeof(int)));
     
     // Create the vertex and normal buffers.
     glGenBuffers(1, &mVertexBuffer);
@@ -205,6 +212,7 @@ void PyramidMeasurement::initBuffers()
 PyramidMeasurement::~PyramidMeasurement()
 {
     cudaSafeCall(cudaFree(mDepthGpu));
+    cudaSafeCall(cudaFree(mMaskGpu));
     cudaSafeCall(cudaGLUnregisterBufferObject(mVertexBuffer));
     cudaSafeCall(cudaGLUnregisterBufferObject(mNormalBuffer));
     glDeleteBuffers(1, &mVertexBuffer);

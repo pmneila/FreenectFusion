@@ -99,7 +99,22 @@ __global__ void pyrdownSmoothDepth(float* output, int width, int height)
     if(x >= width || y >= height)
         return;
     
+    float* current = &output[y*width + x];
     
+    float depth1 = tex2D(smooth_depth_texture, 2*x, 2*y);
+    float cum = 0.f;
+    float weight_cum = 0.f;
+    for(int i=-2; i<=2; ++i)
+        for(int j=-2; j<=2; ++j)
+        {
+            float depth2 = tex2D(smooth_depth_texture, 2*x+i, 2*y+j);
+            float weight1 = gaussian(length2(make_float2(i,j)), 1.f);
+            float weight2 = gaussian(depth1 - depth2, 20.f);
+            weight_cum += weight1 * weight2;
+            cum += depth2 * weight1 * weight2;
+        }
+    cum /= weight_cum;
+    *current = cum;
 }
 
 /**
@@ -362,16 +377,58 @@ void Measurement::setDepth(uint16_t* depth)
     cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
     cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
     measure<<<grid,block>>>(vertices, normals, mMaskGpu,
-                            //mKdepth->getInverseGpu(),
-                            mWidth, mHeight, mWidth*12);
+                            mWidth, mHeight, mWidth*3*sizeof(float));
     cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);
     cudaGLUnmapBufferObject(mNormalBuffer);
+    
+    mPyramid[0]->update();
+    mPyramid[1]->update();
 }
 
 void PyramidMeasurement::update()
 {
+    const float* previousDepthGpu;
+    int previousWidth, previousHeight;
+    if(mParent != 0)
+    {
+        previousDepthGpu = mParent->getSmoothDepthGpu();
+        previousWidth = mParent->getWidth();
+        previousHeight = mParent->getHeight();
+    }
+    else
+    {
+        previousDepthGpu = mParent2->getSmoothDepthGpu();
+        previousWidth = mParent2->getWidth();
+        previousHeight = mParent2->getHeight();
+    }
+    // Bind the depth into a texture for fast access.
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
+    cudaSafeCall(cudaBindTexture2D(0, &smooth_depth_texture, previousDepthGpu, &channelDesc,
+                    previousWidth, previousHeight, previousWidth*sizeof(float)));
     
+    // Resize the image down.
+    dim3 grid, block(16,16,1);
+    grid.x = (mWidth-1)/block.x + 1;
+    grid.y = (mHeight-1)/block.y + 1;
+    pyrdownSmoothDepth<<<grid,block>>>(mDepthGpu, mWidth, mHeight);
+    
+    // Bind the new reduced depth into a texture for fast access.
+    cudaSafeCall(cudaBindTexture2D(0, &smooth_depth_texture, mDepthGpu, &channelDesc,
+                    mWidth, mHeight, mWidth*sizeof(float)));
+    
+    // Determine vertices and normals from the smooth version of the depth map.
+    cudaSafeCall(cudaMemcpyToSymbol(invK, mKInv, sizeof(float)*9));
+    
+    float3* vertices;
+    float3* normals;
+    cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
+    cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
+    measure<<<grid,block>>>(vertices, normals, mMaskGpu,
+                            mWidth, mHeight, mWidth*3*sizeof(float));
+    cudaSafeCall(cudaGetLastError());
+    cudaGLUnmapBufferObject(mVertexBuffer);
+    cudaGLUnmapBufferObject(mNormalBuffer);
 }
 
 void VolumeFusion::initBoundingBox()
