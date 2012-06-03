@@ -8,7 +8,6 @@
 #include <thrust/fill.h>
 
 texture<float, 2, cudaReadModeElementType> depth_texture;
-texture<float, 2, cudaReadModeElementType> smooth_depth_texture;
 texture<float, 3, cudaReadModeElementType> F_texture;
 
 __constant__ float K[9];
@@ -101,13 +100,13 @@ __global__ void pyrdownSmoothDepth(float* output, int width, int height)
     
     float* current = &output[y*width + x];
     
-    float depth1 = tex2D(smooth_depth_texture, 2*x, 2*y);
+    float depth1 = tex2D(depth_texture, 2*x, 2*y);
     float cum = 0.f;
     float weight_cum = 0.f;
     for(int i=-2; i<=2; ++i)
         for(int j=-2; j<=2; ++j)
         {
-            float depth2 = tex2D(smooth_depth_texture, 2*x+i, 2*y+j);
+            float depth2 = tex2D(depth_texture, 2*x+i, 2*y+j);
             float weight1 = gaussian(length2(make_float2(i,j)), 1.f);
             float weight2 = gaussian(depth1 - depth2, 20.f);
             weight_cum += weight1 * weight2;
@@ -136,10 +135,10 @@ __global__ void measure(float3* vertices, float3* normals, int* mask,
     float3 u = make_float3(float(x), float(y), 1.f);
     float3 v = make_float3(float(x+1), float(y), 1.f);
     float3 w = make_float3(float(x), float(y+1), 1.f);
-    float depth = tex2D(smooth_depth_texture, x, y);
+    float depth = tex2D(depth_texture, x, y);
     u = depth * transform3(invK, u);
-    v = tex2D(smooth_depth_texture, x+1, y) * transform3(invK, v);
-    w = tex2D(smooth_depth_texture, x, y+1) * transform3(invK, w);
+    v = tex2D(depth_texture, x+1, y) * transform3(invK, v);
+    w = tex2D(depth_texture, x, y+1) * transform3(invK, w);
     
     float3 n = normalize(cross(v - u, w - u));
     *current_vertex = u;
@@ -243,6 +242,54 @@ __device__ int2 hom2cart(float3 point)
     return make_int2(roundf(point.x/point.z), roundf(point.y/point.z));
 }
 
+__global__ void search_correspondences(float3* vertices_corresp, float3* normals_corresp,
+            float3* vertices_measure, float3* normals_measure,
+            float3* vertices_raycast, float3* normals_raycast,
+            int width_measure, int height_measure,
+            int width_raycast, int height_raycast,
+            float threshold_distance)
+{
+    int x = blockDim.x * blockIdx.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+    int thid = width_measure*y + x;
+    
+    if(x >= width_measure || y >= height_measure)
+        return;
+    
+    float3* current_vertex_corresp = &vertices_corresp[thid];
+    float3* current_normal_corresp = &normals_corresp[thid];
+    
+    float3 vertex_measure = vertices_measure[thid];
+    
+    // Get the corresponding pixel in the raycast image.
+    int2 u_raycast = hom2cart(project(K, Tk_1k, vertex_measure));
+    
+    if(u_raycast.x < 0 || u_raycast.y < 0 ||
+            u_raycast.x >= width_raycast || u_raycast.y >= height_raycast)
+    {
+        *current_vertex_corresp = make_float3(0.f, 0.f, 0.f);
+        *current_normal_corresp = make_float3(0.f, 0.f, 0.f);
+        return;
+    }
+    
+    int id_raycast = width_raycast*u_raycast.y + u_raycast.x;
+    
+    float3 v = transform3_affine(Tgk, vertex_measure);
+    float3 vdiff = vertices_raycast[id_raycast] - v;
+    float vertex_distance = length(vdiff);
+    
+    // Prune invalid matches.
+    if(vertex_measure.z==0.f || vertex_distance > threshold_distance)
+    {
+        *current_vertex_corresp = make_float3(0.f, 0.f, 0.f);
+        *current_normal_corresp = make_float3(0.f, 0.f, 0.f);
+        return;
+    }
+    
+    *current_vertex_corresp = vertices_raycast[id_raycast];
+    *current_normal_corresp = normals_raycast[id_raycast];
+}
+
 __global__ void compute_tracking_matrices(float* AA, float* Ab,
                         float3* vertices_measure, float3* normals_measure,
                         float3* vertices_raycast, float3* normals_raycast,
@@ -343,81 +390,54 @@ void Measurement::setDepth(uint16_t* depth)
                       thrust::device_ptr<float>(mDepthGpu),
                       transform_depth());
     
-    // Bind the depth into a texture for fast access.
-    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
-    cudaSafeCall(cudaBindTexture2D(0, &depth_texture, mDepthGpu, &channelDesc,
-                    mWidth, mHeight, mWidth*sizeof(float)));
-    
-    depth_texture.normalized = false;
-    depth_texture.filterMode = cudaFilterModePoint;
-    depth_texture.addressMode[0] = cudaAddressModeBorder;
-    depth_texture.addressMode[1] = cudaAddressModeBorder;
-    
-    // Compute a smooth version of the depth map.
-    dim3 grid, block(16,16,1);
-    grid.x = (mWidth-1)/block.x + 1;
-    grid.y = (mHeight-1)/block.y + 1;
-    compute_smooth_depth<<<grid,block>>>(mSmoothDepthGpu, mWidth, mHeight, mWidth*sizeof(float),
-                                        2.f, 20.f);
-    cudaSafeCall(cudaGetLastError());
-    
-    // Bind the smooth depth map into a texture for fast access.
-    cudaSafeCall(cudaBindTexture2D(0, &smooth_depth_texture, mSmoothDepthGpu, &channelDesc,
-                    mWidth, mHeight, mWidth*sizeof(float)));
-    smooth_depth_texture.normalized = false;
-    smooth_depth_texture.filterMode = cudaFilterModePoint;
-    smooth_depth_texture.addressMode[0] = cudaAddressModeBorder;
-    smooth_depth_texture.addressMode[1] = cudaAddressModeBorder;
-    
-    // Determine vertices and normals from the smooth version of the depth map.
-    cudaSafeCall(cudaMemcpyToSymbol(invK, mKdepth->getInverse(), sizeof(float)*9));
-    
-    float3* vertices;
-    float3* normals;
-    cudaGLMapBufferObject((void**)&vertices, mVertexBuffer);
-    cudaGLMapBufferObject((void**)&normals, mNormalBuffer);
-    measure<<<grid,block>>>(vertices, normals, mMaskGpu,
-                            mWidth, mHeight, mWidth*3*sizeof(float));
-    cudaSafeCall(cudaGetLastError());
-    cudaGLUnmapBufferObject(mVertexBuffer);
-    cudaGLUnmapBufferObject(mNormalBuffer);
-    
-    mPyramid[0]->update();
-    mPyramid[1]->update();
+    // Generate the pyramid of depth maps and vertices/normals.
+    for(int i=0; i<3; ++i)
+        mPyramid[i]->update();
 }
 
 void PyramidMeasurement::update()
 {
     const float* previousDepthGpu;
     int previousWidth, previousHeight;
+    
+    // Get info from the parent.
     if(mParent != 0)
     {
-        previousDepthGpu = mParent->getSmoothDepthGpu();
+        previousDepthGpu = mParent->getDepthGpu();
         previousWidth = mParent->getWidth();
         previousHeight = mParent->getHeight();
     }
     else
     {
-        previousDepthGpu = mParent2->getSmoothDepthGpu();
+        previousDepthGpu = mParent2->getDepthGpu();
         previousWidth = mParent2->getWidth();
         previousHeight = mParent2->getHeight();
     }
+    
     // Bind the depth into a texture for fast access.
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
-    cudaSafeCall(cudaBindTexture2D(0, &smooth_depth_texture, previousDepthGpu, &channelDesc,
+    cudaSafeCall(cudaBindTexture2D(0, &depth_texture, previousDepthGpu, &channelDesc,
                     previousWidth, previousHeight, previousWidth*sizeof(float)));
+    depth_texture.normalized = false;
+    depth_texture.filterMode = cudaFilterModePoint;
+    depth_texture.addressMode[0] = cudaAddressModeBorder;
+    depth_texture.addressMode[1] = cudaAddressModeBorder;
     
-    // Resize the image down.
+    // Smooth or resize the image down.
     dim3 grid, block(16,16,1);
     grid.x = (mWidth-1)/block.x + 1;
     grid.y = (mHeight-1)/block.y + 1;
-    pyrdownSmoothDepth<<<grid,block>>>(mDepthGpu, mWidth, mHeight);
+    if(mParent != 0)
+        compute_smooth_depth<<<grid,block>>>(mDepthGpu, previousWidth, previousHeight,
+                                            mWidth*sizeof(float), 2.f, 20.f);
+    else
+        pyrdownSmoothDepth<<<grid,block>>>(mDepthGpu, mWidth, mHeight);
     
-    // Bind the new reduced depth into a texture for fast access.
-    cudaSafeCall(cudaBindTexture2D(0, &smooth_depth_texture, mDepthGpu, &channelDesc,
+    // Bind the new reduced/smooth depth into a texture for fast access.
+    cudaSafeCall(cudaBindTexture2D(0, &depth_texture, mDepthGpu, &channelDesc,
                     mWidth, mHeight, mWidth*sizeof(float)));
     
-    // Determine vertices and normals from the smooth version of the depth map.
+    // Determine vertices and normals from the depth map.
     cudaSafeCall(cudaMemcpyToSymbol(invK, mKInv, sizeof(float)*9));
     
     float3* vertices;
@@ -460,12 +480,20 @@ void VolumeFusion::update(const Measurement& measurement, const float* T)
     grid.x = grid.y = mSide/block.x;
     grid.z = 1;
     
+    // Set instrinsic and extrinsics in constant memory.
     const float* kdepth = measurement.getK();
     const float* kdepthinv = measurement.getKInverse();
     cudaSafeCall(cudaMemcpyToSymbol(K, kdepth, sizeof(float)*9));
     cudaSafeCall(cudaMemcpyToSymbol(invK, kdepthinv, sizeof(float)*9));
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, T, sizeof(float)*16));
     
+    // Bind the depth map into the depth_texture.
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
+    cudaSafeCall(cudaBindTexture2D(0, &depth_texture, measurement.getDepthGpu(), &channelDesc,
+                    measurement.getWidth(), measurement.getHeight(),
+                    measurement.getWidth()*sizeof(float)));
+    
+    // Update the volume.
     for(int i=0; i<mSide; i+=block.z)
         update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel, 200.f, i);
     cudaSafeCall(cudaGetLastError());
@@ -539,6 +567,22 @@ floatN<6> operator+(const floatN<6>& a, const floatN<6>& b)
     return res;
 }
 
+void Tracker::searchCorrespondences(float* K,
+               const float* currentT, const float* current2InitT,
+               float3* verticesOld, float3* normalsOld,
+               float3* verticesNew, float3* normalsNew,
+               int widthOld, int heightOld, int widthNew, int heightNew)
+{
+    cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
+    cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
+    cudaSafeCall(cudaMemcpyToSymbol(K, K, sizeof(float)*9));
+    dim3 block(16,16,1), grid;
+    grid.x = (widthOld - 1)/block.x + 1;
+    grid.y = (heightOld - 1)/block.y + 1;
+    
+    cudaSafeCall(cudaGetLastError());
+}
+
 void Tracker::trackStep(float* AA, float* Ab, const float* currentT,
                         const float* current2InitT,
                         float3* verticesOld, float3* normalsOld,
@@ -564,13 +608,13 @@ void Tracker::trackStep(float* AA, float* Ab, const float* currentT,
     //                         size_t AA_pitch, size_t Ab_pitch,
     //                         const int* mask,
     //                         float threshold_distance)
-    compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
-                                              verticesNew, normalsNew,
-                                              verticesOld, normalsOld,
-                                              meas.getWidth(), meas.getHeight(),
-                                              sizeof(float)*21, sizeof(float)*6,
-                                              meas.getMaskGpu(),
-                                              20.f);
+    // compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
+    //                                           verticesNew, normalsNew,
+    //                                           verticesOld, normalsOld,
+    //                                           meas.getWidth(), meas.getHeight(),
+    //                                           sizeof(float)*21, sizeof(float)*6,
+    //                                           meas.getMaskGpu(),
+    //                                           20.f);
     cudaSafeCall(cudaGetLastError());
     
     // Sum AA and Ab.

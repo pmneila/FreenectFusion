@@ -55,6 +55,9 @@ private:
     void initBuffers();
     void initK(float a, float b);
     
+    void update1();
+    void update2();
+    
 public:
     PyramidMeasurement(Measurement* parent);
     PyramidMeasurement(PyramidMeasurement* parent);
@@ -65,7 +68,7 @@ public:
     inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
     
-    inline const float* getSmoothDepthGpu() const {return mDepthGpu;}
+    inline const float* getDepthGpu() const {return mDepthGpu;}
     
     inline const float* getK() const {return mK;}
     inline const float* getKInverse() const {return mKInv;}
@@ -79,17 +82,12 @@ class Measurement
 private:
     int mWidth, mHeight, mNumVertices;
     float* mDepthGpu;
-    float* mSmoothDepthGpu;
     uint16_t* mRawDepthGpu;
     mutable float* mDepth;
     
     MatrixGpu* mKdepth;
     
-    unsigned int mVertexBuffer;
-    unsigned int mNormalBuffer;
-    int* mMaskGpu;
-    
-    PyramidMeasurement* mPyramid[2];
+    PyramidMeasurement* mPyramid[3];
     
 public:
     Measurement(int width, int height, const double* Kdepth);
@@ -99,29 +97,16 @@ public:
     
     inline float* getDepthGpu() {return mDepthGpu;}
     inline const float* getDepthGpu() const {return mDepthGpu;}
-    inline const float* getSmoothDepthGpu() const {return mSmoothDepthGpu;}
     const float* getDepthHost() const;
-    
-    inline const int* getMaskGpu() const {return mMaskGpu;}
     
     inline const float* getK() const {return mKdepth->get();}
     inline const float* getKInverse() const {return mKdepth->getInverse();}
     
     inline unsigned int getGLVertexBuffer(int level=0) const
-    {
-        if(level == 0)
-            return mVertexBuffer;
-        else
-            return mPyramid[level-1]->getGLVertexBuffer();
-    }
+    { return mPyramid[level]->getGLVertexBuffer(); }
     
     inline unsigned int getGLNormalBuffer(int level=0) const
-    {
-        if(level == 0)
-            return mNormalBuffer;
-        else
-            return mPyramid[level-1]->getGLNormalBuffer();
-    }
+    { return mPyramid[level]->getGLNormalBuffer(); }
     
     inline int getWidth() const {return mWidth;}
     inline int getHeight() const {return mHeight;}
@@ -190,10 +175,15 @@ private:
     float* mAbGpu;
     float mAA[21];
     float mAb[6];
-    mutable float* mCurrentTGpu;
-    mutable float* mCurrent2InitTGpu;
     float mTrackTransform[16];
+    float3* mVertexCorrespondencesGpu;
+    float3* mNormalCorrespondencesGpu;
     
+    void searchCorrespondences(float* K,
+                   const float* currentT, const float* current2InitT,
+                   float3* verticesOld, float3* normalsOld,
+                   float3* verticesNew, float3* normalsNew,
+                   int widthOld, int heightOld, int widthNew, int heightNew);
     void trackStep(float* AA, float* Ab, const float* currentT, const float* current2InitT,
                    float3* verticesOld, float3* normalsOld,
                    float3* verticesNew, float3* normalsNew,

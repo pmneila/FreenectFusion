@@ -107,42 +107,25 @@ Measurement::Measurement(int width, int height, const double* Kdepth)
     // Depth related data.
     size_t pitch;
     cudaSafeCall(cudaMallocPitch((void**)&mDepthGpu, &pitch, sizeof(float)*width, height));
-    cudaSafeCall(cudaMallocPitch((void**)&mSmoothDepthGpu, &pitch, sizeof(float)*width, height));
     cudaSafeCall(cudaMallocPitch((void**)&mRawDepthGpu, &pitch, sizeof(uint16_t)*width, height));
     
     mDepth = new float[width * height];
     
-    // Vertices and normals.
-    glGenBuffers(1, &mVertexBuffer);
-    glGenBuffers(1, &mNormalBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, mVertexBuffer);
-    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), 0, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_ARRAY_BUFFER, mNormalBuffer);
-    glBufferData(GL_ARRAY_BUFFER, mNumVertices*3*sizeof(float), 0, GL_DYNAMIC_COPY);
-    cudaGLRegisterBufferObject(mVertexBuffer);
-    cudaGLRegisterBufferObject(mNormalBuffer);
-    cudaSafeCall(cudaMallocPitch((void**)&mMaskGpu, &pitch, sizeof(int)*width, height));
-    
     mPyramid[0] = new PyramidMeasurement(this);
     mPyramid[1] = new PyramidMeasurement(mPyramid[0]);
+    mPyramid[2] = new PyramidMeasurement(mPyramid[1]);
 }
 
 Measurement::~Measurement()
 {
     delete mPyramid[0];
     delete mPyramid[1];
+    delete mPyramid[2];
     
     delete mKdepth;
     cudaSafeCall(cudaFree(mDepthGpu));
-    cudaSafeCall(cudaFree(mSmoothDepthGpu));
     cudaSafeCall(cudaFree(mRawDepthGpu));
     delete [] mDepth;
-    
-    cudaSafeCall(cudaGLUnregisterBufferObject(mVertexBuffer));
-    cudaSafeCall(cudaGLUnregisterBufferObject(mNormalBuffer));
-    glDeleteBuffers(1, &mVertexBuffer);
-    glDeleteBuffers(1, &mNormalBuffer);
-    cudaSafeCall(cudaFree(mMaskGpu));
 }
 
 const float* Measurement::getDepthHost() const
@@ -153,14 +136,14 @@ const float* Measurement::getDepthHost() const
 }
 
 PyramidMeasurement::PyramidMeasurement(Measurement* parent)
-    : mParent(parent), mParent2(0), mLevel(1)
+    : mParent(parent), mParent2(0), mLevel(0)
 {
-    mWidth = mParent->getWidth()>>1;
-    mHeight = mParent->getHeight()>>1;
+    mWidth = mParent->getWidth();
+    mHeight = mParent->getHeight();
     mNumVertices = mWidth * mHeight;
-    std::copy(parent->getK(), parent->getK()+9, mK);
     
-    initK(0.5f, -0.25f);
+    std::copy(parent->getK(), parent->getK()+9, mK);
+    invertIntrinsics(mKInv, mK);
     initBuffers();
 }
 
@@ -170,12 +153,8 @@ PyramidMeasurement::PyramidMeasurement(PyramidMeasurement* parent)
     mWidth = mParent2->getWidth()>>1;
     mHeight = mParent2->getHeight()>>1;
     mNumVertices = mWidth * mHeight;
-    std::copy(parent->getK(), parent->getK()+9, mK);
     
-    float a = 1.f/(1<<mLevel);
-    float b = 0.f;
-    for(int i=0; i<mLevel; ++i)
-        b -= 1.f/(1<<(i+2));
+    std::copy(parent->getK(), parent->getK()+9, mK);
     initK(0.5f, -0.25f);
     initBuffers();    
 }
@@ -325,16 +304,12 @@ Tracker::Tracker(int maxNumVertices)
 {
     cudaSafeCall(cudaMalloc((void**)&mAAGpu, sizeof(float)*maxNumVertices*21));
     cudaSafeCall(cudaMalloc((void**)&mAbGpu, sizeof(float)*maxNumVertices*6));
-    cudaSafeCall(cudaMalloc((void**)&mCurrentTGpu, sizeof(float)*16));
-    cudaSafeCall(cudaMalloc((void**)&mCurrent2InitTGpu, sizeof(float)*16));
 }
 
 Tracker::~Tracker()
 {
     cudaSafeCall(cudaFree(mAAGpu));
     cudaSafeCall(cudaFree(mAbGpu));
-    cudaSafeCall(cudaFree(mCurrentTGpu));
-    cudaSafeCall(cudaFree(mCurrent2InitTGpu));
 }
 
 void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,

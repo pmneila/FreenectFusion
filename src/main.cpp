@@ -181,9 +181,9 @@ protected:
             glPushMatrix();
             transposeTransform(aux, mFfusion->getLocation());
             glMultMatrixf(aux);
-            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLVertexBuffer(2));
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLVertexBuffer(0));
             glVertexPointer(3, GL_FLOAT, 12, 0);
-            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLNormalBuffer(2));
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLNormalBuffer(0));
             glColorPointer(3, GL_FLOAT, 12, 0);
             glDrawArrays(GL_POINTS, 0, 640*480);
             glPopMatrix();
