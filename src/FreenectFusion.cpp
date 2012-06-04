@@ -57,7 +57,7 @@ static void multiplyTransforms(float* res, const float* T1, const float* T2)
     }
 }
 
-MatrixGpu::MatrixGpu(int side, const double* K, const double* Kinv)
+MatrixGpu::MatrixGpu(int side, const float* K, const float* Kinv)
     : mSide(side), mSize(side*side)
 {
     mK = new float[mSize];
@@ -82,9 +82,9 @@ MatrixGpu::~MatrixGpu()
     cudaSafeCall(cudaFree(mKinvGpu));
 }
 
-MatrixGpu* MatrixGpu::newIntrinsicMatrix(const double* K)
+MatrixGpu* MatrixGpu::newIntrinsicMatrix(const float* K)
 {
-    double Kinv[9];
+    float Kinv[9];
     std::fill(Kinv, Kinv+9, 0.0);
     Kinv[0] = 1.0/K[0];
     Kinv[4] = 1.0/K[4];
@@ -94,12 +94,12 @@ MatrixGpu* MatrixGpu::newIntrinsicMatrix(const double* K)
     return new MatrixGpu(3, K, Kinv);
 }
 
-MatrixGpu* MatrixGpu::newTransformMatrix(const double* T)
+MatrixGpu* MatrixGpu::newTransformMatrix(const float* T)
 {
     return 0;
 }
 
-Measurement::Measurement(int width, int height, const double* Kdepth)
+Measurement::Measurement(int width, int height, const float* Kdepth)
     : mWidth(width), mHeight(height), mNumVertices(width*height)
 {
     mKdepth = MatrixGpu::newIntrinsicMatrix(Kdepth);
@@ -274,7 +274,7 @@ float VolumeFusion::getMaximumDistanceTo(const float* point) const
     return *std::max_element(distance, distance+8);
 }
 
-VolumeMeasurement::VolumeMeasurement(int width, int height, const double* Kdepth)
+VolumeMeasurement::VolumeMeasurement(int width, int height, const float* Kdepth)
     : mWidth(width), mHeight(height), mNumVertices(mWidth*mHeight)
 {
     mKdepth = MatrixGpu::newIntrinsicMatrix(Kdepth);
@@ -304,12 +304,18 @@ Tracker::Tracker(int maxNumVertices)
 {
     cudaSafeCall(cudaMalloc((void**)&mAAGpu, sizeof(float)*maxNumVertices*21));
     cudaSafeCall(cudaMalloc((void**)&mAbGpu, sizeof(float)*maxNumVertices*6));
+    
+    cudaSafeCall(cudaMalloc((void**)&mVertexCorrespondencesGpu, sizeof(float3)*maxNumVertices));
+    cudaSafeCall(cudaMalloc((void**)&mNormalCorrespondencesGpu, sizeof(float3)*maxNumVertices));
 }
 
 Tracker::~Tracker()
 {
     cudaSafeCall(cudaFree(mAAGpu));
     cudaSafeCall(cudaFree(mAbGpu));
+    
+    cudaSafeCall(cudaFree(mVertexCorrespondencesGpu));
+    cudaSafeCall(cudaFree(mNormalCorrespondencesGpu));
 }
 
 void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
@@ -336,25 +342,41 @@ void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
     float3* normalsVolume;
     
     // TODO: Are these heavy calls?
-    cudaGLMapBufferObject((void**)&verticesMeasure, meas.getGLVertexBuffer());
-    cudaGLMapBufferObject((void**)&normalsMeasure, meas.getGLNormalBuffer());
     cudaGLMapBufferObject((void**)&verticesVolume, volMeas.getGLVertexBuffer());
     cudaGLMapBufferObject((void**)&normalsVolume, volMeas.getGLNormalBuffer());
+    int widthRaycast = volMeas.getWidth();
+    int heightRaycast = volMeas.getHeight();
     
-    for(int i=0; i<5; ++i)
+    for(int level=2; level>=0; --level)
     {
-        if(i!=0)
+        const PyramidMeasurement* pyr = meas.getLevel(level);
+        
+        cudaGLMapBufferObject((void**)&verticesMeasure, pyr->getGLVertexBuffer());
+        cudaGLMapBufferObject((void**)&normalsMeasure, pyr->getGLNormalBuffer());
+        int widthMeasure = pyr->getWidth();
+        int heightMeasure = pyr->getHeight();
+        
+        for(int i=0; i<3; ++i)
+        {
             multiplyTransforms(current2InitT, initTinv, currentT);
-        trackStep(AA, Ab, currentT, current2InitT,
-                  verticesVolume, normalsVolume, verticesMeasure, normalsMeasure,
-                  meas, volMeas);
-        solveSystem(incT, AA, Ab);
-        multiplyTransforms(currentT2, incT, currentT);
-        std::copy(currentT2, currentT2+16, currentT);
+            searchCorrespondences(mVertexCorrespondencesGpu, mNormalCorrespondencesGpu,
+                                volMeas.getK(), currentT, current2InitT,
+                                verticesMeasure, normalsMeasure,
+                                verticesVolume, normalsVolume,
+                                widthMeasure, heightMeasure, widthRaycast, heightRaycast);
+            trackStep(AA, Ab, currentT,
+                      verticesMeasure, normalsMeasure,
+                      mVertexCorrespondencesGpu, mNormalCorrespondencesGpu,
+                      pyr->getNumVertices());
+            solveSystem(incT, AA, Ab);
+            multiplyTransforms(currentT2, incT, currentT);
+            std::copy(currentT2, currentT2+16, currentT);
+        }
+        
+        cudaGLUnmapBufferObject(pyr->getGLVertexBuffer());
+        cudaGLUnmapBufferObject(pyr->getGLNormalBuffer());
     }
     
-    cudaGLUnmapBufferObject(meas.getGLVertexBuffer());
-    cudaGLUnmapBufferObject(meas.getGLNormalBuffer());
     cudaGLUnmapBufferObject(volMeas.getGLVertexBuffer());
     cudaGLUnmapBufferObject(volMeas.getGLNormalBuffer());
     
@@ -406,7 +428,7 @@ void Tracker::solveSystem(float* incT, const float* AA, const float* Ab)
 }
 
 FreenectFusion::FreenectFusion(int width, int height,
-                        const double* Kdepth, const double* Krgb)
+                        const float* Kdepth, const float* Krgb)
     : mWidth(width), mHeight(height), mActiveTracking(false),
     mActiveUpdate(true)
 {

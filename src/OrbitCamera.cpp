@@ -6,6 +6,8 @@
 #include <functional>
 #include <cmath>
 
+#include "Eigen/Dense"
+
 static void cross(double* res, const double* a, const double* b)
 {
     res[0] = a[1]*b[2] - a[2]*b[1];
@@ -77,6 +79,33 @@ const double* OrbitCamera::getVector() const
     mVector[1] = std::sin(mLatitude) * mRadius;
     mVector[2] = std::sin(mLongitude) * cosLat * mRadius;
     return mVector;
+}
+
+#include <iostream>
+
+const double* OrbitCamera::getTransform() const
+{
+    static const Eigen::Vector3d up(0.0, 1.0, 0.0);
+    const double* aux = getPosition();
+    Eigen::Vector3d pos(aux[0], aux[1], aux[2]);
+    aux = getVector();
+    Eigen::Vector3d z(aux[0], aux[1], aux[2]);
+    z /= -z.norm();
+    Eigen::Vector3d x = up.cross(z);
+    x /= x.norm();
+    Eigen::Vector3d y = z.cross(x);
+    Eigen::Matrix3d rot;
+    rot.block<1,3>(0,0) = x;
+    rot.block<1,3>(1,0) = y;
+    rot.block<1,3>(2,0) = z;
+    
+    typedef Eigen::Matrix<double, 4, 4, Eigen::RowMajor> Matrix4dr;
+    Matrix4dr transf = Matrix4dr::Identity();
+    transf.block<3,3>(0,0) = rot.transpose();
+    transf.block<3,1>(0,3) = pos;
+    
+    std::copy(transf.data(), transf.data()+16, mTransform);
+    return mTransform;
 }
 
 void OrbitCamera::getGluLookAtParameters(double* params) const

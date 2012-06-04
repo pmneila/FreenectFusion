@@ -143,6 +143,11 @@ __global__ void measure(float3* vertices, float3* normals, int* mask,
     float3 n = normalize(cross(v - u, w - u));
     *current_vertex = u;
     *current_normal = n;
+    if(depth < 0.01f)
+    {
+        *current_vertex = make_float3(0.f, 0.f, 0.f);
+        *current_normal = make_float3(0.f, 0.f, 2.f);
+    }
     mask[thid] = depth > 0.01f;
 }
 
@@ -216,7 +221,7 @@ __global__ void raycast(float3* vertices, float3* normals,
         
         if(value < -2 || (old_value < 0 && value > 0))
             break;
-        if(old_value > 0 && value <= 0)
+        if(old_value >= 0 && value < 0)
         {
             float t = distance - step - (step * old_value)/(value - old_value);
             *current_vertex = tgk + t * ray;
@@ -230,6 +235,7 @@ __global__ void raycast(float3* vertices, float3* normals,
         old_value = value;
     }
     *current_vertex = make_float3(0.f, 0.f, 0.f);
+    *current_normal = make_float3(0.f, 0.f, 2.f);
 }
 
 __device__ float3 project(const float* K, const float* T, float3 point)
@@ -243,8 +249,8 @@ __device__ int2 hom2cart(float3 point)
 }
 
 __global__ void search_correspondences(float3* vertices_corresp, float3* normals_corresp,
-            float3* vertices_measure, float3* normals_measure,
-            float3* vertices_raycast, float3* normals_raycast,
+            const float3* vertices_measure, float3* normals_measure,
+            const float3* vertices_raycast, const float3* normals_raycast,
             int width_measure, int height_measure,
             int width_raycast, int height_raycast,
             float threshold_distance)
@@ -268,7 +274,7 @@ __global__ void search_correspondences(float3* vertices_corresp, float3* normals
             u_raycast.x >= width_raycast || u_raycast.y >= height_raycast)
     {
         *current_vertex_corresp = make_float3(0.f, 0.f, 0.f);
-        *current_normal_corresp = make_float3(0.f, 0.f, 0.f);
+        *current_normal_corresp = make_float3(0.f, 0.f, 2.f);
         return;
     }
     
@@ -282,56 +288,39 @@ __global__ void search_correspondences(float3* vertices_corresp, float3* normals
     if(vertex_measure.z==0.f || vertex_distance > threshold_distance)
     {
         *current_vertex_corresp = make_float3(0.f, 0.f, 0.f);
-        *current_normal_corresp = make_float3(0.f, 0.f, 0.f);
+        *current_normal_corresp = make_float3(0.f, 0.f, 2.f);
         return;
     }
     
     *current_vertex_corresp = vertices_raycast[id_raycast];
     *current_normal_corresp = normals_raycast[id_raycast];
+    
+    // For debug only.
+    normals_measure[thid] = make_float3(1.f, 1.f, 1.f);
 }
 
 __global__ void compute_tracking_matrices(float* AA, float* Ab,
-                        float3* vertices_measure, float3* normals_measure,
-                        float3* vertices_raycast, float3* normals_raycast,
-                        int width, int height,
-                        size_t AA_pitch, size_t Ab_pitch,
-                        const int* mask,
-                        float threshold_distance)
+                        const float3* vertices_measure, const float3* normals_measure,
+                        const float3* vertices_corresp, const float3* normals_corresp,
+                        int numVertices)
 {
-    int x = blockDim.x * blockIdx.x + threadIdx.x;
-    int y = blockDim.y * blockIdx.y + threadIdx.y;
-    int thid = width*y + x;
+    int blockId = __mul24(blockIdx.y, gridDim.x) + blockIdx.x;
+    int thid = __mul24(blockId, blockDim.x) + threadIdx.x;
+    //int thid = blockDim.x * blockIdx.x + threadIdx.x;
     
-    if(x >= width || y >= height)
+    if(thid >= numVertices)
         return;
     
-    float* current_AA = (float*)((char*)AA + AA_pitch * thid);
-    float* current_Ab = (float*)((char*)Ab + Ab_pitch * thid);
+    float* current_AA = &AA[21*thid];
+    float* current_Ab = &Ab[6*thid];
     
-    float3 vertex_measure = vertices_measure[thid];
-    
-    // Get the corresponding pixel in the raycast image.
-    int2 u_raycast = hom2cart(project(K, Tk_1k, vertex_measure));
-    
-    if(u_raycast.x < 0 || u_raycast.y < 0 ||
-            u_raycast.x >= width || u_raycast.y >= height)
+    if(normals_corresp[thid].z == 2.f)
         return;
     
-    int id_raycast = width*u_raycast.y + u_raycast.x;
-    float3 vertex_raycast = vertices_raycast[id_raycast];
+    float3 v = transform3_affine(Tgk, vertices_measure[thid]);
+    float3 n = normals_corresp[thid];
+    float b = dot(vertices_corresp[thid] - v, n);
     
-    float3 v = transform3_affine(Tgk, vertex_measure);
-    float3 vdiff = vertex_raycast - v;
-    float vertex_distance = length(vdiff);
-    
-    // Prune invalid matches.
-    if(!mask[thid] || vertex_distance > threshold_distance)
-        return;
-    
-    normals_measure[thid] = make_float3(1,1,1);
-    
-    float3 n = normals_raycast[thid];
-    float b = dot(vdiff, n);
     current_Ab[0] = b*(v.z*n.y - v.y*n.z);
     current_Ab[1] = b*(-v.z*n.x + v.x*n.z);
     current_Ab[2] = b*(v.y*n.x - v.x*n.y);
@@ -466,8 +455,9 @@ void VolumeFusion::bindTextureToF(texture& tex) const
     
     tex.normalized = false;
     tex.filterMode = cudaFilterModeLinear;
-    tex.addressMode[0] = cudaAddressModeClamp;
-    tex.addressMode[1] = cudaAddressModeClamp;
+    tex.addressMode[0] = cudaAddressModeBorder;
+    tex.addressMode[1] = cudaAddressModeBorder;
+    tex.addressMode[2] = cudaAddressModeBorder;
     
     static const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
     cudaSafeCall(cudaBindTextureToArray(tex, mFArray, channelDesc));
@@ -519,7 +509,7 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
     grid.x = (mWidth-1)/block.x + 1;
     grid.y = (mHeight-1)/block.y + 1;
     raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*3*sizeof(float),
-                            volume.getSide(), volume.getUnitsPerVoxel(), 200.f,
+                            volume.getSide(), volume.getUnitsPerVoxel(), 50.f,
                             mindistance, maxdistance);
     cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);
@@ -567,62 +557,63 @@ floatN<6> operator+(const floatN<6>& a, const floatN<6>& b)
     return res;
 }
 
-void Tracker::searchCorrespondences(float* K,
+void Tracker::searchCorrespondences(float3* vertexCorresp, float3* normalsCorresp,
+               const float* K_,
                const float* currentT, const float* current2InitT,
-               float3* verticesOld, float3* normalsOld,
-               float3* verticesNew, float3* normalsNew,
-               int widthOld, int heightOld, int widthNew, int heightNew)
+               const float3* verticesMeasure, const float3* normalsMeasure,
+               const float3* verticesRaycast, const float3* normalsRaycast,
+               int widthMeasure, int heightMeasure, int widthRaycast, int heightRaycast)
 {
+    // Copy intrinsic and extrinsic matrices to constant memory.
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
     cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
-    cudaSafeCall(cudaMemcpyToSymbol(K, K, sizeof(float)*9));
-    dim3 block(16,16,1), grid;
-    grid.x = (widthOld - 1)/block.x + 1;
-    grid.y = (heightOld - 1)/block.y + 1;
+    cudaSafeCall(cudaMemcpyToSymbol(K, K_, sizeof(float)*9));
     
+    dim3 block(16,16,1), grid;
+    grid.x = (widthMeasure - 1)/block.x + 1;
+    grid.y = (heightMeasure - 1)/block.y + 1;
+    // Search the correspondences between device measurements and volume measurements.
+    search_correspondences<<<grid,block>>>(vertexCorresp, normalsCorresp,
+                    verticesMeasure, (float3*)normalsMeasure, verticesRaycast, normalsRaycast,
+                    widthMeasure, heightMeasure, widthRaycast, heightRaycast, 20.f);
     cudaSafeCall(cudaGetLastError());
 }
 
 void Tracker::trackStep(float* AA, float* Ab, const float* currentT,
-                        const float* current2InitT,
-                        float3* verticesOld, float3* normalsOld,
-                        float3* verticesNew, float3* normalsNew,
-                        const Measurement& meas, const VolumeMeasurement& volMeas)
+                        const float3* verticesMeasure, const float3* normalsMeasure,
+                        const float3* verticesCorresp, const float3* normalsCorresp,
+                        int numVertices)
 {
+    // Set the result matrices to 0.
     thrust::fill(thrust::device_ptr<float>(mAAGpu),
-                thrust::device_ptr<float>(mAAGpu + 21*mMaxNumVertices), 0.f);
+                thrust::device_ptr<float>(mAAGpu + 21*numVertices), 0.f);
     thrust::fill(thrust::device_ptr<float>(mAbGpu),
-                thrust::device_ptr<float>(mAbGpu + 6*mMaxNumVertices), 0.f);
-    ;
-    dim3 block(16,16,1), grid;
-    grid.x = (meas.getWidth() - 1)/block.x + 1;
-    grid.y = (meas.getHeight() - 1)/block.y + 1;
+                thrust::device_ptr<float>(mAbGpu + 6*numVertices), 0.f);
     
+    // Determine the grid and block sizes.
+    dim3 block(32,1,1), grid;
+    grid.x = (numVertices - 1)/block.x + 1;
+    while(grid.x > 65535)
+    {
+        grid.x /= 2;
+        grid.y *= 2;
+    }
+    // Copy the extrinsic matrix to the constant memory.
     cudaSafeCall(cudaMemcpyToSymbol(Tgk, currentT, sizeof(float)*16));
-    cudaSafeCall(cudaMemcpyToSymbol(Tk_1k, current2InitT, sizeof(float)*16));
-    cudaSafeCall(cudaMemcpyToSymbol(K, meas.getK(), sizeof(float)*9));
-    // __global__ void compute_tracking_matrices(float* AA, float* Ab,
-    //                         float3* vertices_measure, float3* normals_measure,
-    //                         float3* vertices_raycast, float3* normals_raycast,
-    //                         int width, int height,
-    //                         size_t AA_pitch, size_t Ab_pitch,
-    //                         const int* mask,
-    //                         float threshold_distance)
-    // compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
-    //                                           verticesNew, normalsNew,
-    //                                           verticesOld, normalsOld,
-    //                                           meas.getWidth(), meas.getHeight(),
-    //                                           sizeof(float)*21, sizeof(float)*6,
-    //                                           meas.getMaskGpu(),
-    //                                           20.f);
+    
+    // Compute the matrices.
+    compute_tracking_matrices<<<grid,block>>>(mAAGpu, mAbGpu,
+                                              verticesMeasure, normalsMeasure,
+                                              verticesCorresp, normalsCorresp,
+                                              numVertices);
     cudaSafeCall(cudaGetLastError());
     
     // Sum AA and Ab.
     floatN<21> _AA = thrust::reduce(thrust::device_ptr<floatN<21> >((floatN<21>*)mAAGpu),
-                        thrust::device_ptr<floatN<21> >(((floatN<21>*)mAAGpu) + mMaxNumVertices),
+                        thrust::device_ptr<floatN<21> >(((floatN<21>*)mAAGpu) + numVertices),
                         floatN<21>(0.f), thrust::plus<floatN<21> >());
     floatN<6> _Ab = thrust::reduce(thrust::device_ptr<floatN<6> >((floatN<6>*)mAbGpu),
-                        thrust::device_ptr<floatN<6> >(((floatN<6>*)mAbGpu) + mMaxNumVertices),
+                        thrust::device_ptr<floatN<6> >(((floatN<6>*)mAbGpu) + numVertices),
                         floatN<6>(0.f), thrust::plus<floatN<6> >());
     ;
     std::copy(_AA.a, _AA.a+21, AA);

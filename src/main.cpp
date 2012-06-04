@@ -1,5 +1,6 @@
 
 #include "DemoBase.h"
+#include "OrbitCamera.h"
 #include "FreenectFusion.h"
 #include "MarchingCubes.h"
 
@@ -15,7 +16,7 @@
 #include <iterator>
 #include <cstring>
 
-void read_calib_file(double* Krgb, double* Kdepth, double* T, const std::string& filename)
+void read_calib_file(float* Krgb, float* Kdepth, float* T, const std::string& filename)
 {
     std::ifstream ifs(filename.c_str());
     
@@ -77,7 +78,8 @@ class Viewer : public DemoBase
 private:
     GLuint mTexture;
     FreenectFusion* mFfusion;
-    double Krgb[9], Kdepth[9], T[16];
+    VolumeMeasurement* mRenderer;
+    float Krgb[9], Kdepth[9], T[16];
     
     bool mDrawFlags[3];
     
@@ -137,13 +139,14 @@ public:
     {
         read_calib_file(Krgb, Kdepth, T, calib_filename);
         mDrawFlags[0] = true;
-        mDrawFlags[1] = false;
+        mDrawFlags[1] = true;
         mDrawFlags[2] = false;
     }
     
     ~Viewer()
     {
         delete mFfusion;
+        delete mRenderer;
     }
     
 protected:
@@ -162,10 +165,27 @@ protected:
         glPointSize(1);
         
         glMatrixMode(GL_MODELVIEW);
-        glRotated(180, 0, 0, 1);
         
         glEnableClientState(GL_VERTEX_ARRAY);
         glEnableClientState(GL_COLOR_ARRAY);
+        
+        if(mDrawFlags[0])
+        {
+            glPushMatrix();
+            const double* t = getCamera()->getTransform();
+            float t2[16];
+            std::copy(t, t+16, t2);
+            mRenderer->measure(*mFfusion->getVolume(), t2);
+            
+            glBindBuffer(GL_ARRAY_BUFFER, mRenderer->getGLVertexBuffer());
+            glVertexPointer(3, GL_FLOAT, 3*sizeof(float), 0);
+            glBindBuffer(GL_ARRAY_BUFFER, mRenderer->getGLNormalBuffer());
+            glColorPointer(3, GL_FLOAT, 3*sizeof(float), 0);
+            glDrawArrays(GL_POINTS, 0, mRenderer->getNumVertices());
+            glPopMatrix();
+        }
+        
+        //glRotated(180, 0, 0, 1);
         
         if(mDrawFlags[1])
         {
@@ -181,9 +201,9 @@ protected:
             glPushMatrix();
             transposeTransform(aux, mFfusion->getLocation());
             glMultMatrixf(aux);
-            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLVertexBuffer(0));
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLVertexBuffer(1));
             glVertexPointer(3, GL_FLOAT, 12, 0);
-            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLNormalBuffer(0));
+            glBindBuffer(GL_ARRAY_BUFFER, mFfusion->getMeasurement()->getGLNormalBuffer(1));
             glColorPointer(3, GL_FLOAT, 12, 0);
             glDrawArrays(GL_POINTS, 0, 640*480);
             glPopMatrix();
@@ -215,6 +235,9 @@ protected:
         glTexImage2D(GL_TEXTURE_2D, 0, 1, 640, 480, 0, GL_LUMINANCE, GL_FLOAT, 0);
         
         mFfusion = new FreenectFusion(640, 480, Kdepth, Krgb);
+        
+        const float K[9] = {450, 0, width/2.f, 0, 450, height/2.f, 0, 0, 1.f};
+        mRenderer = new VolumeMeasurement(width, height, K);
     }
     
     void keyboardPressEvent(unsigned char key, int x, int y)

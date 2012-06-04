@@ -31,6 +31,8 @@ public:
     virtual void run(int* argcp, char** argv);
     inline double getFPS() const {return mFPS;}
     
+    inline OrbitCamera* getCamera() {return mCamera;}
+    
     static DemoBase* instance;
     
 protected:

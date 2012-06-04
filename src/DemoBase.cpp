@@ -82,7 +82,7 @@ void DemoBase::run(int* argcp, char** argv)
     glutMouseFunc(DemoBase::mouse_button_event);
     glutMotionFunc(DemoBase::mouse_moved_event);
     
-    initGl(mWindow, mHeight);
+    initGl(mWidth, mHeight);
     
     glutMainLoop();
 }

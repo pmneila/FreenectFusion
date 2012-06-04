@@ -10,6 +10,7 @@ private:
     double mLongitude, mLatitude;
     mutable double mPosition[3];
     mutable double mVector[3];
+    mutable double mTransform[16];
     
 public:
     
@@ -22,6 +23,7 @@ public:
     
     const double* getPosition() const;
     const double* getVector() const;
+    const double* getTransform() const;
     void getGluLookAtParameters(double* params) const;
 };
 

@@ -20,10 +20,10 @@ private:
     float* mKinvGpu;
     
 public:
-    static MatrixGpu* newIntrinsicMatrix(const double* K);
-    static MatrixGpu* newTransformMatrix(const double* T);
+    static MatrixGpu* newIntrinsicMatrix(const float* K);
+    static MatrixGpu* newTransformMatrix(const float* T);
     
-    MatrixGpu(int side, const double* K, const double* Kinv=0);
+    MatrixGpu(int side, const float* K, const float* Kinv=0);
     ~MatrixGpu();
     
     inline operator const float*() const {return mK;}
@@ -75,6 +75,7 @@ public:
     inline int getLevel() const {return mLevel;}
     inline int getWidth() const {return mWidth;}
     inline int getHeight() const {return mHeight;}
+    inline int getNumVertices() const {return mNumVertices;}
 };
 
 class Measurement
@@ -90,7 +91,7 @@ private:
     PyramidMeasurement* mPyramid[3];
     
 public:
-    Measurement(int width, int height, const double* Kdepth);
+    Measurement(int width, int height, const float* Kdepth);
     ~Measurement();
     
     void setDepth(uint16_t* depth);
@@ -110,6 +111,8 @@ public:
     
     inline int getWidth() const {return mWidth;}
     inline int getHeight() const {return mHeight;}
+    
+    const PyramidMeasurement* getLevel(int level) const {return mPyramid[level];}
 };
 
 class VolumeFusion
@@ -157,7 +160,7 @@ private:
     float mT[16];
     
 public:
-    VolumeMeasurement(int width, int height, const double* Kdepth);
+    VolumeMeasurement(int width, int height, const float* Kdepth);
     ~VolumeMeasurement();
     
     void measure(const VolumeFusion& volume, const float* T);
@@ -165,6 +168,13 @@ public:
     inline unsigned int getGLVertexBuffer() const {return mVertexBuffer;}
     inline unsigned int getGLNormalBuffer() const {return mNormalBuffer;}
     inline const float* getTransform() const {return mT;}
+    
+    inline int getWidth() const {return mWidth;}
+    inline int getHeight() const {return mHeight;}
+    inline int getNumVertices() const {return mNumVertices;}
+    
+    inline const float* getK() const {return mKdepth->get();}
+    inline const float* getKInverse() const {return mKdepth->getInverse();}
 };
 
 class Tracker
@@ -179,15 +189,16 @@ private:
     float3* mVertexCorrespondencesGpu;
     float3* mNormalCorrespondencesGpu;
     
-    void searchCorrespondences(float* K,
+    void searchCorrespondences(float3* vertexCorresp, float3* normalsCorresp,
+                   const float* K,
                    const float* currentT, const float* current2InitT,
-                   float3* verticesOld, float3* normalsOld,
-                   float3* verticesNew, float3* normalsNew,
+                   const float3* verticesOld, const float3* normalsOld,
+                   const float3* verticesNew, const float3* normalsNew,
                    int widthOld, int heightOld, int widthNew, int heightNew);
-    void trackStep(float* AA, float* Ab, const float* currentT, const float* current2InitT,
-                   float3* verticesOld, float3* normalsOld,
-                   float3* verticesNew, float3* normalsNew,
-                   const Measurement& meas, const VolumeMeasurement& volMeas);
+    void trackStep(float* AA, float* Ab, const float* currentT,
+                   const float3* verticesMeasure, const float3* normalsMeasure,
+                   const float3* verticesCorresp, const float3* normalsCorresp,
+                   int numVertices);
     
     void solveSystem(float* incT, const float* AA, const float* Ab);
     
@@ -218,7 +229,7 @@ private:
     
 public:
     FreenectFusion(int width, int height,
-                    const double* Kdepth, const double* Krgb);
+                    const float* Kdepth, const float* Krgb);
     ~FreenectFusion();
     
     void update(void* depth);
