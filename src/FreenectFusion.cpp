@@ -347,6 +347,7 @@ void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
     int widthRaycast = volMeas.getWidth();
     int heightRaycast = volMeas.getHeight();
     
+    const int numIters[] = {10, 4, 3};
     for(int level=2; level>=0; --level)
     {
         const PyramidMeasurement* pyr = meas.getLevel(level);
@@ -356,7 +357,7 @@ void Tracker::track(const Measurement& meas, const VolumeMeasurement& volMeas,
         int widthMeasure = pyr->getWidth();
         int heightMeasure = pyr->getHeight();
         
-        for(int i=0; i<3; ++i)
+        for(int i=0; i<numIters[level]; ++i)
         {
             multiplyTransforms(current2InitT, initTinv, currentT);
             searchCorrespondences(mVertexCorrespondencesGpu, mNormalCorrespondencesGpu,
@@ -438,7 +439,7 @@ FreenectFusion::FreenectFusion(int width, int height,
                                            0.f, 0.f, 0.f, 1.f};
     
     mMeasurement = new Measurement(width, height, Kdepth);
-    mVolume = new VolumeFusion(7, /*7.8125f*/5.859375f);
+    mVolume = new VolumeFusion(8, /*7.8125f*/5.859375f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     mTracker = new Tracker(width*height);
     //mMC = new MarchingCubes(mVolume);

@@ -81,8 +81,6 @@ const double* OrbitCamera::getVector() const
     return mVector;
 }
 
-#include <iostream>
-
 const double* OrbitCamera::getTransform() const
 {
     static const Eigen::Vector3d up(0.0, 1.0, 0.0);

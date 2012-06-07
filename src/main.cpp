@@ -169,6 +169,8 @@ protected:
         glEnableClientState(GL_VERTEX_ARRAY);
         glEnableClientState(GL_COLOR_ARRAY);
         
+        glRotated(180, 0, 0, 1);
+        
         if(mDrawFlags[0])
         {
             glPushMatrix();
@@ -184,8 +186,6 @@ protected:
             glDrawArrays(GL_POINTS, 0, mRenderer->getNumVertices());
             glPopMatrix();
         }
-        
-        //glRotated(180, 0, 0, 1);
         
         if(mDrawFlags[1])
         {
