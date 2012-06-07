@@ -50,16 +50,16 @@ __device__ float gaussian(float t, float sigma)
 
 __host__ __device__ float3 gridToWorld(float3 p, int side, float units_per_voxel)
 {
-    return make_float3((p.x - side/2) * units_per_voxel,
-                        (p.y - side/2) * units_per_voxel,
-                        (p.z - side/2) * units_per_voxel);
+    return make_float3((p.x - side/2 + 0.5f) * units_per_voxel,
+                        (p.y - side/2 + 0.5f) * units_per_voxel,
+                        (p.z - side/2 + 0.5f) * units_per_voxel);
 }
 
 __host__ __device__ float3 worldToGrid(float3 p, int side, float units_per_voxel)
 {
-    return make_float3(p.x/units_per_voxel + side/2,
-                        p.y/units_per_voxel + side/2,
-                        p.z/units_per_voxel + side/2);
+    return make_float3(p.x/units_per_voxel + side/2 - 0.5f,
+                        p.y/units_per_voxel + side/2 - 0.5f,
+                        p.z/units_per_voxel + side/2 - 0.5f);
 }
 
 __global__ void compute_smooth_depth(float* smooth_depth,
@@ -188,7 +188,7 @@ __global__ void update_reconstruction(float* F, float* W,
         *current_F = F_rk;
     else
         *current_F = (*current_W * *current_F + W_rk * F_rk)/(*current_W + W_rk);
-    *current_W = min(*current_W + W_rk, 20.f);
+    *current_W = min(*current_W + W_rk, 50.f);
 }
 
 __global__ void raycast(float3* vertices, float3* normals,
@@ -485,7 +485,7 @@ void VolumeFusion::update(const Measurement& measurement, const float* T)
     
     // Update the volume.
     for(int i=0; i<mSide; i+=block.z)
-        update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel, 200.f, i);
+        update_reconstruction<<<grid,block>>>(mFGpu, mWGpu, mSide, mUnitsPerVoxel, 30.f, i);
     cudaSafeCall(cudaGetLastError());
 }
 
@@ -509,7 +509,7 @@ void VolumeMeasurement::measure(const VolumeFusion& volume, const float* T)
     grid.x = (mWidth-1)/block.x + 1;
     grid.y = (mHeight-1)/block.y + 1;
     raycast<<<grid,block>>>(vertices, normals, mWidth, mHeight, mWidth*3*sizeof(float),
-                            volume.getSide(), volume.getUnitsPerVoxel(), 50.f,
+                            volume.getSide(), volume.getUnitsPerVoxel(), 30.f,
                             mindistance, maxdistance);
     cudaSafeCall(cudaGetLastError());
     cudaGLUnmapBufferObject(mVertexBuffer);
@@ -575,7 +575,7 @@ void Tracker::searchCorrespondences(float3* vertexCorresp, float3* normalsCorres
     // Search the correspondences between device measurements and volume measurements.
     search_correspondences<<<grid,block>>>(vertexCorresp, normalsCorresp,
                     verticesMeasure, (float3*)normalsMeasure, verticesRaycast, normalsRaycast,
-                    widthMeasure, heightMeasure, widthRaycast, heightRaycast, 20.f);
+                    widthMeasure, heightMeasure, widthRaycast, heightRaycast, 100.f);
     cudaSafeCall(cudaGetLastError());
 }
 

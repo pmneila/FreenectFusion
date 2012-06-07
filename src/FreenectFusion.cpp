@@ -438,7 +438,7 @@ FreenectFusion::FreenectFusion(int width, int height,
                                            0.f, 0.f, 0.f, 1.f};
     
     mMeasurement = new Measurement(width, height, Kdepth);
-    mVolume = new VolumeFusion(7, 7.8125f);
+    mVolume = new VolumeFusion(7, /*7.8125f*/5.859375f);
     mVolumeMeasurement = new VolumeMeasurement(width, height, Kdepth);
     mTracker = new Tracker(width*height);
     //mMC = new MarchingCubes(mVolume);
