@@ -15,7 +15,7 @@ __constant__ float invK[9];
 __constant__ float Tgk[16];
 __constant__ float Tk_1k[16];
 
-__device__ float3 transform3(const float* matrix, float3 v)
+__device__ float3 transform3(const float* matrix, const float3& v)
 {
     float3 res;
     res.x = matrix[0]*v.x + matrix[1]*v.y + matrix[2]*v.z;
@@ -24,7 +24,7 @@ __device__ float3 transform3(const float* matrix, float3 v)
     return res;
 }
 
-__device__ float3 transform3_affine(const float* matrix, float3 v)
+__device__ float3 transform3_affine(const float* matrix, const float3& v)
 {
     float3 res;
     res.x = matrix[0]*v.x + matrix[1]*v.y + matrix[2]*v.z + matrix[3];
@@ -33,7 +33,7 @@ __device__ float3 transform3_affine(const float* matrix, float3 v)
     return res;
 }
 
-__device__ float3 transform3_affine_inverse(const float* matrix, float3 v)
+__device__ float3 transform3_affine_inverse(const float* matrix, const float3& v)
 {
     float3 res;
     float3 v2 = make_float3(v.x-matrix[3], v.y-matrix[7], v.z-matrix[11]);
@@ -48,14 +48,14 @@ __device__ float gaussian(float t, float sigma)
     return exp(-t*t/(sigma*sigma));
 }
 
-__host__ __device__ float3 gridToWorld(float3 p, int side, float units_per_voxel)
+__host__ __device__ float3 gridToWorld(const float3& p, int side, float units_per_voxel)
 {
     return make_float3((p.x - side/2 + 0.5f) * units_per_voxel,
                         (p.y - side/2 + 0.5f) * units_per_voxel,
                         (p.z - side/2 + 0.5f) * units_per_voxel);
 }
 
-__host__ __device__ float3 worldToGrid(float3 p, int side, float units_per_voxel)
+__host__ __device__ float3 worldToGrid(const float3& p, int side, float units_per_voxel)
 {
     return make_float3(p.x/units_per_voxel + side/2 - 0.5f,
                         p.y/units_per_voxel + side/2 - 0.5f,
